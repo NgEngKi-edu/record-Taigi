@@ -53,7 +53,6 @@
     .btn:active{transform:translateY(1px) scale(.99)}
     .btn[disabled]{opacity:.55;cursor:not-allowed;box-shadow:none}
 
-    /* ✅ 狀態文字與進度條各占一整列 + 字體加大 */
     .meta{
       display:flex;
       flex-direction:column;
@@ -105,7 +104,7 @@
     <div class="card">
       <div class="row" style="justify-content:space-between;margin-bottom:10px;">
         <div class="pill"><i class="dot wait" id="micDot"></i><span id="micText">麥克風狀態：尚未授權</span></div>
-        <div class="pill"><span>錄音格式：</span><b id="fmt">自動</b></div>
+        <div class="pill"><span>錄音格式：</span><b id="fmt">WAV (16kHz)</b></div>
       </div>
 
       <div class="label">選擇作業</div>
@@ -159,14 +158,9 @@
 
 <script>
 (() => {
-  // ====== 你只要改這個：貼上你的 GAS Web App /exec 連結 ======
+  // 你的 GAS Web App /exec
   const GAS_URL = "https://script.google.com/macros/s/AKfycbwK2iLgREG52ReX_CLUQdai-iiAUzDNubkRKhAXL03Gk4QjkbJe71IKQ4pFQLFAPlg/exec";
-
-  // JSONP：跨網域載入作業清單（不碰 CORS）
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
-
-  let tasks = [];
-  let selected = null;
 
   const elTitle = document.querySelector('#title');
   const elTask = document.querySelector('#taskSel');
@@ -177,7 +171,6 @@
 
   const micDot = document.querySelector('#micDot');
   const micText = document.querySelector('#micText');
-  const fmt = document.querySelector('#fmt');
 
   const bar = document.querySelector('#bar');
   const t = document.querySelector('#t');
@@ -185,24 +178,39 @@
   const btnMicTest = document.querySelector('#micTest');
   const btnHelp = document.querySelector('#help');
 
-  let mediaStream = null;
-  let recording = false;
+  let tasks = [];
+  let selected = null;
 
+  let recording = false;
   let durationTotal = 0;
   let timeLeft = 0;
   let timerId = null;
 
-  // Wake Lock（支援的瀏覽器才有效）
+  // Wake Lock
   let wakeLock = null;
   let wantWakeLock = false;
 
-  // WebAudio 錄音
+  // WebAudio & capture
+  let mediaStream = null;
   let audioCtx = null;
   let srcNode = null;
+
+  // capture nodes (worklet preferred)
+  let workletNode = null;
   let procNode = null;
   let zeroGain = null;
+
+  // PCM buffer
   let pcmChunks = [];
   let pcmLength = 0;
+
+  // 建議：關閉 Android 常見的處理（避免語音被 gate 成斷斷續續）
+  const AUDIO_CONSTRAINTS = {
+    channelCount: 1,
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false
+  };
 
   function setMicState(state, msg){
     micDot.classList.remove('ok','no','wait');
@@ -229,16 +237,16 @@
     return true;
   }
 
-  function updateBtnState(){
-    const ok = !!selected && validInfo() && !isExpired(selected);
-    elBtn.disabled = !ok || recording;
-  }
-
   function isExpired(task){
     if(!task || !task.deadline) return false;
     const ts = Date.parse(task.deadline);
     if(Number.isNaN(ts)) return false;
     return ts < Date.now();
+  }
+
+  function updateBtnState(){
+    const ok = !!selected && validInfo() && !isExpired(selected);
+    elBtn.disabled = !ok || recording;
   }
 
   function renderTaskOptions(){
@@ -320,7 +328,7 @@
   async function requestMicOnce(){
     try{
       setMicState('wait','麥克風狀態：請求權限中…');
-      const st = await navigator.mediaDevices.getUserMedia({ audio:true });
+      const st = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
       st.getTracks().forEach(tr=>tr.stop());
       setMicState('ok','麥克風狀態：已開啟（可錄音）');
       elStatus.innerHTML = `✅ 麥克風正常<span class="sub">現在可以開始錄音。</span>`;
@@ -353,9 +361,7 @@
       if (!('wakeLock' in navigator)) return;
       if (document.visibilityState !== 'visible') return;
       wakeLock = await navigator.wakeLock.request('screen');
-    }catch(e){
-      // 安靜降級
-    }
+    }catch(e){}
   }
 
   function releaseWakeLock(){
@@ -367,8 +373,14 @@
     if (document.visibilityState === 'visible') await requestWakeLock();
   });
 
+  function ensureAudioCtx(){
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
   function stopAllAudio(){
     try{
+      if (workletNode){ workletNode.port.onmessage = null; workletNode.disconnect(); workletNode = null; }
       if (procNode){ procNode.disconnect(); procNode.onaudioprocess = null; procNode = null; }
       if (srcNode){ srcNode.disconnect(); srcNode = null; }
       if (zeroGain){ zeroGain.disconnect(); zeroGain = null; }
@@ -376,7 +388,6 @@
 
     try{
       if (audioCtx){
-        // 不強制 close（iOS 有時會卡），但可以嘗試
         audioCtx.close && audioCtx.close();
       }
     }catch(e){}
@@ -385,11 +396,6 @@
     try{
       if (mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
     }catch(e){}
-  }
-
-  function ensureAudioCtx(){
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
   }
 
   function mergeFloat32(chunks, totalLen){
@@ -452,13 +458,13 @@
     writeString(view, 8, 'WAVE');
 
     writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true); // PCM
-    view.setUint16(20, 1, true);  // format
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
     view.setUint16(22, numChannels, true);
     view.setUint32(24, sampleRate, true);
     view.setUint32(28, byteRate, true);
     view.setUint16(32, blockAlign, true);
-    view.setUint16(34, 16, true); // bits
+    view.setUint16(34, 16, true);
 
     writeString(view, 36, 'data');
     view.setUint32(40, dataSize, true);
@@ -484,16 +490,59 @@
   }
 
   function makeToken(){
-    try{
-      if (crypto && crypto.randomUUID) return crypto.randomUUID();
-    }catch(e){}
+    try{ if (crypto && crypto.randomUUID) return crypto.randomUUID(); }catch(e){}
     return 't' + Date.now() + '_' + Math.random().toString(16).slice(2);
   }
 
-  async function detectFormat(){
-    // 統一格式：WAV(16kHz)（各裝置/電腦皆可直接播放）
-    fmt.textContent = 'WAV (16kHz)';
-    return 'audio/wav';
+  async function initWorklet(){
+    // AudioWorklet 版 PCM capture（Android/Chrome 會比 ScriptProcessor 穩很多）
+    if (!audioCtx || !audioCtx.audioWorklet) return false;
+
+    const workletCode = `
+      class PcmCapture extends AudioWorkletProcessor {
+        constructor(){
+          super();
+          this._bufs = [];
+          this._len = 0;
+          this._target = 2048; // 累積到一定大小再送，減少 message 次數
+          this.port.onmessage = (e)=>{
+            const d = e.data || {};
+            if(d.cmd === 'flush'){
+              this._flush();
+            }
+          };
+        }
+        _flush(){
+          if(!this._len) return;
+          const out = new Float32Array(this._len);
+          let off = 0;
+          for(const b of this._bufs){
+            out.set(b, off);
+            off += b.length;
+          }
+          this._bufs = [];
+          this._len = 0;
+          this.port.postMessage(out, [out.buffer]);
+        }
+        process(inputs){
+          const input = inputs[0] && inputs[0][0];
+          if(input && input.length){
+            const c = new Float32Array(input.length);
+            c.set(input);
+            this._bufs.push(c);
+            this._len += c.length;
+            if(this._len >= this._target) this._flush();
+          }
+          return true;
+        }
+      }
+      registerProcessor('pcm-capture', PcmCapture);
+    `;
+    const blob = new Blob([workletCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    await audioCtx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    return true;
   }
 
   async function startRecordingAndSubmit(){
@@ -508,34 +557,50 @@
       wantWakeLock = true;
       await requestWakeLock();
 
-      await detectFormat();
-
       setMicState('wait','麥克風狀態：錄音準備中…');
       elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">請允許麥克風權限。</span>`;
 
-      // 取得麥克風
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
 
-      // WebAudio 開始收 PCM
       ensureAudioCtx();
       pcmChunks = []; pcmLength = 0;
 
       srcNode = audioCtx.createMediaStreamSource(mediaStream);
-      procNode = audioCtx.createScriptProcessor(4096, 1, 1);
       zeroGain = audioCtx.createGain();
       zeroGain.gain.value = 0;
 
-      procNode.onaudioprocess = (ev) => {
-        const input = ev.inputBuffer.getChannelData(0);
-        // 複製一份（避免 buffer 被重用）
-        const copy = new Float32Array(input.length);
-        copy.set(input);
-        pcmChunks.push(copy);
-        pcmLength += copy.length;
-      };
+      // 優先 AudioWorklet，fallback 才用 ScriptProcessor
+      let useWorklet = false;
+      try{
+        useWorklet = await initWorklet();
+      }catch(e){ useWorklet = false; }
 
-      srcNode.connect(procNode);
-      procNode.connect(zeroGain);
+      if(useWorklet){
+        workletNode = new AudioWorkletNode(audioCtx, 'pcm-capture');
+        workletNode.port.onmessage = (ev)=>{
+          const chunk = ev.data;
+          if(chunk && chunk.length){
+            pcmChunks.push(chunk);
+            pcmLength += chunk.length;
+          }
+        };
+        srcNode.connect(workletNode);
+        workletNode.connect(zeroGain);
+      }else{
+        // fallback：加大 buffer 降低 Android 掉幀機率
+        const bufSize = 16384;
+        procNode = audioCtx.createScriptProcessor(bufSize, 1, 1);
+        procNode.onaudioprocess = (ev)=>{
+          const input = ev.inputBuffer.getChannelData(0);
+          const copy = new Float32Array(input.length);
+          copy.set(input);
+          pcmChunks.push(copy);
+          pcmLength += copy.length;
+        };
+        srcNode.connect(procNode);
+        procNode.connect(zeroGain);
+      }
+
       zeroGain.connect(audioCtx.destination);
 
       setMicState('ok','麥克風狀態：錄音中');
@@ -550,7 +615,6 @@
 
       startCountdown(async ()=>{
         try{
-          // 停止收音
           recording = false;
           updateBtnState();
           clearTimer();
@@ -558,16 +622,22 @@
           setMicState('wait','麥克風狀態：處理音檔中…');
           elStatus.innerHTML = `🧾 產生音檔中…<span class="sub">完成後會自動送出並跳回執頁。</span>`;
 
-          // 先停掉 WebAudio callback，避免處理時還繼續塞資料（Safari/iOS 特別需要）
           const inRate = audioCtx.sampleRate;
+
+          // flush worklet remaining
+          if(workletNode){
+            try{ workletNode.port.postMessage({ cmd:'flush' }); }catch(e){}
+            await new Promise(r=>setTimeout(r, 80));
+          }
+
+          // disconnect capture graph
           try{
-            if (procNode) procNode.onaudioprocess = null;
             if (srcNode) srcNode.disconnect();
-            if (procNode) procNode.disconnect();
+            if (procNode){ procNode.onaudioprocess = null; procNode.disconnect(); }
+            if (workletNode){ workletNode.disconnect(); }
             if (zeroGain) zeroGain.disconnect();
           }catch(e){}
 
-          // 將 PCM 資料合併為 WAV
           const merged = mergeFloat32(pcmChunks, pcmLength);
           const down = downsampleBuffer(merged, inRate, 16000);
           const pcm16 = floatTo16BitPCM(down);
@@ -575,7 +645,6 @@
           const wavBlob = new Blob([wavBuf], { type: 'audio/wav' });
           const b64 = await blobToBase64(wavBlob);
 
-          // 釋放資源
           stopAllAudio();
 
           setMicState('wait','麥克風狀態：送出中…');
@@ -591,7 +660,6 @@
             base64: b64
           };
 
-          // ✅ iOS 修正重點：不再用 form 超長欄位送 b64u（會被截斷）
           await fetch(`${GAS_URL}?api=uploadV2`, {
             method: 'POST',
             mode: 'no-cors',
@@ -601,13 +669,11 @@
           wantWakeLock = false;
           releaseWakeLock();
 
-          // 跳到回執頁
           location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(token)}`;
 
         }catch(err){
           wantWakeLock = false;
           releaseWakeLock();
-
           stopAllAudio();
 
           setMicState('no','麥克風狀態：送出失敗');
@@ -643,7 +709,6 @@
     startRecordingAndSubmit();
   });
 
-  // ====== JSONP callback（GAS 會呼叫）======
   window.__onCfg = (cfg) => {
     elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
     tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
@@ -651,7 +716,6 @@
     renderTaskOptions();
   };
 
-  // ====== 載入 JSONP ======
   (function loadJsonp(){
     const s = document.createElement('script');
     s.src = JSONP_SRC();
