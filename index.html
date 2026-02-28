@@ -114,7 +114,7 @@
       <div class="two" style="margin-top:10px;">
         <div>
           <div class="label">座號</div>
-          <input id="seatNo" inputmode="numeric" placeholder="例：12" maxlength="2" />
+          <input id="seatNo" inputmode="numeric" placeholder="例：30" maxlength="2" />
         </div>
         <div>
           <div class="label">姓名</div>
@@ -210,6 +210,9 @@
   let durationTotal = 0;
   let timeLeft = 0;
   let timerId = null;
+  
+  let wakeLock = null;
+  let wantWakeLock = false; // 只有錄音中才需要保持螢幕常亮
 
   function setMicState(state, msg){
     micDot.classList.remove('ok','no','wait');
@@ -359,6 +362,32 @@
   function clearTimer(){
     if(timerId){ clearInterval(timerId); timerId = null; }
   }
+  
+  async function requestWakeLock(){
+    try{
+      if (!('wakeLock' in navigator)) return; // 不支援就略過
+      if (document.visibilityState !== 'visible') return; // 不在前景就先不鎖
+      wakeLock = await navigator.wakeLock.request('screen');
+    }catch(e){
+      // 失敗就安靜降級，不要影響錄音流程
+    }
+  }
+
+  function releaseWakeLock(){
+    try{
+      if (wakeLock){
+        wakeLock.release();
+        wakeLock = null;
+      }
+    }catch(e){}
+  }
+  
+   document.addEventListener('visibilitychange', async () => {
+    if (!wantWakeLock) return;
+    if (document.visibilityState === 'visible') {
+      await requestWakeLock();
+    }
+  });
 
   function startCountdown(autoStopFn){
     clearTimer();
@@ -403,7 +432,10 @@
     }
 
     try{
-      setMicState('wait','麥克風狀態：錄音準備中…');
+      wantWakeLock = true;
+      await requestWakeLock();
+	  
+	  setMicState('wait','麥克風狀態：錄音準備中…');
       elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">請允許麥克風權限。</span>`;
 
       const mimeType = await detectFormat();
@@ -435,9 +467,14 @@
           f_b64u.value = b64u;
 
           upForm.submit();
+		  wantWakeLock = false;
+          releaseWakeLock();
 
         }catch(err){
-          recording = false;
+          wantWakeLock = false;
+          releaseWakeLock();
+		  
+		  recording = false;
           updateBtnState();
           setMicState('no','麥克風狀態：送出失敗');
           elStatus.innerHTML = `❌ 送出失敗<span class="sub">${String(err||'')}</span>`;
@@ -459,7 +496,10 @@
       });
 
     }catch(err){
-      recording = false;
+      wantWakeLock = false;
+      releaseWakeLock();
+	  
+	  recording = false;
       stopAll();
       clearTimer();
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
