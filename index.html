@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>錄音作業繳交</title>
+  <style>
+    :root{
+      --ink:#111827;--muted:#6B7280;--line:#E5E7EB;--card:#fff;--bg:#F6FBFF;
+      --blue:#1D4ED8;--green:#16A34A;--red:#EF4444;--yellow:#F59E0B;
+      --shadow:0 12px 30px rgba(17,24,39,.12);--r:18px;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;padding:18px;
+      background:
+        radial-gradient(900px 420px at 20% 0%, #E0F2FE 0%, transparent 60%),
+        radial-gradient(800px 420px at 90% 10%, #DCFCE7 0%, transparent 60%),
+        var(--bg);
+      color:var(--ink);
+      font-family:"Microsoft JhengHei",system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans TC",sans-serif;
+    }
+    .wrap{max-width:880px;margin:0 auto;}
+    .brand{display:flex;align-items:center;gap:12px;margin:8px 0 14px;}
+    .logo{
+      width:44px;height:44px;border-radius:14px;
+      background:linear-gradient(135deg,#1D4ED8 0%,#16A34A 100%);
+      box-shadow:0 10px 18px rgba(29,78,216,.18);
+    }
+    h1{margin:0;font-size:20px}
+    .subt{color:var(--muted);font-size:13px;margin-top:2px}
+    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px;align-items:start}
+    @media (max-width:820px){.grid{grid-template-columns:1fr}}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:16px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:10px 12px;border-radius:999px;border:1px solid var(--line);background:#F9FAFB;font-size:13px;color:var(--muted)}
+    .dot{width:10px;height:10px;border-radius:999px;background:#9CA3AF;box-shadow:0 0 0 4px rgba(156,163,175,.18)}
+    .dot.ok{background:var(--green);box-shadow:0 0 0 4px rgba(22,163,74,.16)}
+    .dot.no{background:var(--red);box-shadow:0 0 0 4px rgba(239,68,68,.15)}
+    .dot.wait{background:var(--yellow);box-shadow:0 0 0 4px rgba(245,158,11,.18)}
+    .label{font-size:12px;color:var(--muted);margin-bottom:6px}
+    select,input{width:100%;padding:12px 12px;border-radius:14px;border:1px solid var(--line);font-size:15px;outline:none;background:#fff}
+    select:focus,input:focus{border-color:rgba(29,78,216,.5);box-shadow:0 0 0 4px rgba(29,78,216,.12)}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media (max-width:520px){.two{grid-template-columns:1fr}}
+    .btn{
+      width:100%;padding:14px 16px;border:0;border-radius:16px;
+      font-size:16px;font-weight:800;cursor:pointer;color:#fff;
+      background:linear-gradient(135deg,#1D4ED8 0%,#2563EB 55%,#16A34A 120%);
+      box-shadow:0 16px 26px rgba(29,78,216,.22);
+      transition:transform .06s ease,filter .2s ease;
+    }
+    .btn:active{transform:translateY(1px) scale(.99)}
+    .btn[disabled]{opacity:.55;cursor:not-allowed;box-shadow:none}
+    .meta{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:10px;flex-wrap:wrap}
+    .status{font-size:13px;color:var(--muted);line-height:1.5}
+    .status b{color:var(--ink)}
+    .status .sub{display:block;margin-top:2px;font-size:12px;color:#6B7280}
+    .timer{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:999px;background:#F3F4F6;border:1px solid var(--line);min-width:200px}
+    .bar{flex:1;height:9px;border-radius:999px;background:#E5E7EB;overflow:hidden}
+    .bar > i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#16A34A 0%,#22C55E 60%,#F59E0B 110%);border-radius:999px}
+    .t{font-variant-numeric:tabular-nums;font-weight:900;min-width:42px;text-align:right}
+    .help{margin-top:10px;font-size:13px;color:var(--muted);line-height:1.6}
+    .sbtn{border:1px solid var(--line);background:#fff;color:#111827;padding:10px 12px;border-radius:14px;font-weight:800;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:8px}
+    .sbtn:active{transform:translateY(1px)}
+    .smallBtnRow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .tag{display:inline-block;padding:6px 10px;border-radius:999px;background:#EEF2FF;color:#1D4ED8;font-weight:900;font-size:12px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo" aria-hidden="true"></div>
+    <div>
+      <h1 id="title">錄音作業</h1>
+      <div class="subt">選作業 → 填座號姓名 → 開始錄音（結束會自動送出並開回執分頁）</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px;">
+        <div class="pill"><i class="dot wait" id="micDot"></i><span id="micText">麥克風狀態：尚未授權</span></div>
+        <div class="pill"><span>錄音格式：</span><b id="fmt">自動</b></div>
+      </div>
+
+      <div class="label">選擇作業</div>
+      <select id="taskSel"></select>
+
+      <div class="two" style="margin-top:10px;">
+        <div>
+          <div class="label">座號</div>
+          <input id="seatNo" inputmode="numeric" placeholder="例：12" maxlength="2" />
+        </div>
+        <div>
+          <div class="label">姓名</div>
+          <input id="stuName" placeholder="例：王小明" maxlength="10" />
+        </div>
+      </div>
+
+      <button class="btn" id="btn" style="margin-top:12px;" disabled>開始錄音並送出</button>
+
+      <div class="meta">
+        <div class="timer">
+          <div class="bar"><i id="bar"></i></div>
+          <div class="t" id="t">00:00</div>
+        </div>
+        <div class="status" id="status">
+          載入作業中…
+          <span class="sub">第一次會要求麥克風權限，請按「允許」。</span>
+        </div>
+      </div>
+
+      <div class="smallBtnRow">
+        <button class="sbtn" id="micTest">🎤 麥克風測試</button>
+        <button class="sbtn" id="help">🧩 權限教學</button>
+      </div>
+
+      <div class="help">
+        <span class="tag">最穩模式</span> 本頁在 GitHub Pages，錄音不會被 GAS iframe 擋住；送出用表單 POST，不用 CORS。<br/>
+        若「回執分頁」沒跳出，請允許彈出視窗（或改用 Chrome/Edge）。
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:900;margin-bottom:6px;">常見問題</div>
+      <div class="help">
+        ・LINE 內建瀏覽器可能無法錄音，請「在瀏覽器開啟」。<br/>
+        ・iPad/iPhone 建議 Safari/Chrome 最新版，並允許麥克風權限。<br/>
+        ・錄音秒數太長會導致檔案太大，建議 20～60 秒。<br/>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 隱藏上傳表單：送到 GAS（form POST） -->
+<form id="upForm" method="POST" style="display:none;">
+  <input name="taskId" id="f_taskId" />
+  <input name="seatNo" id="f_seatNo" />
+  <input name="studentName" id="f_studentName" />
+  <input name="type" id="f_type" />
+  <input name="b64u" id="f_b64u" />
+</form>
+
+<script>
+(() => {
+  // ====== 你只要改這個：貼上你的 GAS Web App /exec 連結 ======
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbydsmyRH5-oAzgyHpOfvtZDuAAyRT_4p7BshR86ZvhdE0T93SzzOraSQH--3Db02Ko/exec";
+
+  // JSONP：跨網域載入作業清單（不碰 CORS）
+  const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
+
+  let tasks = [];
+  let selected = null;
+
+  const elTitle = document.querySelector('#title');
+  const elTask = document.querySelector('#taskSel');
+  const elSeat = document.querySelector('#seatNo');
+  const elName = document.querySelector('#stuName');
+  const elBtn  = document.querySelector('#btn');
+  const elStatus = document.querySelector('#status');
+
+  const micDot = document.querySelector('#micDot');
+  const micText = document.querySelector('#micText');
+  const fmt = document.querySelector('#fmt');
+
+  const bar = document.querySelector('#bar');
+  const t = document.querySelector('#t');
+
+  const btnMicTest = document.querySelector('#micTest');
+  const btnHelp = document.querySelector('#help');
+
+  const upForm = document.querySelector('#upForm');
+  const f_taskId = document.querySelector('#f_taskId');
+  const f_seatNo = document.querySelector('#f_seatNo');
+  const f_studentName = document.querySelector('#f_studentName');
+  const f_type = document.querySelector('#f_type');
+  const f_b64u = document.querySelector('#f_b64u');
+
+  let mediaStream = null;
+  let recorder = null;
+  let chunks = [];
+  let recording = false;
+
+  let durationTotal = 0;
+  let timeLeft = 0;
+  let timerId = null;
+
+  // 為了避免 popup 被擋：在「按開始」當下先開一個回執分頁（使用者手勢）
+  let receiptWin = null;
+
+  function setMicState(state, msg){
+    micDot.classList.remove('ok','no','wait');
+    if(state === 'ok') micDot.classList.add('ok');
+    else if(state === 'no') micDot.classList.add('no');
+    else micDot.classList.add('wait');
+    micText.textContent = msg || '麥克風狀態：偵測中';
+  }
+
+  function setTimer(sec){
+    const m = Math.floor(sec/60);
+    const s = sec%60;
+    t.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    const pct = durationTotal ? Math.max(0, Math.min(100, ((durationTotal-sec)/durationTotal)*100 )) : 0;
+    bar.style.width = `${pct}%`;
+  }
+
+  function validInfo(){
+    const seat = String(elSeat.value||'').trim();
+    const name = String(elName.value||'').trim();
+    if(!/^\d{1,2}$/.test(seat)) return false;
+    if(Number(seat) < 1 || Number(seat) > 99) return false;
+    if(name.length < 2) return false;
+    return true;
+  }
+
+  function updateBtnState(){
+    const ok = !!selected && validInfo() && !isExpired(selected);
+    elBtn.disabled = !ok || recording;
+  }
+
+  function isExpired(task){
+    if(!task || !task.deadline) return false;
+    const ts = Date.parse(task.deadline);
+    if(Number.isNaN(ts)) return false;
+    return ts < Date.now();
+  }
+
+  function renderTaskOptions(){
+    elTask.innerHTML = '';
+
+    if(!tasks.length){
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（目前沒有開放作業）';
+      elTask.appendChild(opt);
+      selected = null;
+      durationTotal = 0; timeLeft = 0;
+      setTimer(0);
+      elStatus.innerHTML = `目前沒有開放作業<span class="sub">請稍後再試或聯繫老師。</span>`;
+      updateBtnState();
+      return;
+    }
+
+    tasks.forEach((x, idx)=>{
+      const opt = document.createElement('option');
+      opt.value = x.id;
+      const expired = isExpired(x);
+      const dl = x.deadline ? `｜截止：${x.deadline}` : '';
+      opt.textContent = `${x.title}${dl}${expired ? '（已截止）' : ''}`;
+      if(expired) opt.disabled = true;
+      elTask.appendChild(opt);
+      if(idx === 0 && !selected && !expired) selected = x;
+    });
+
+    // 若第一筆剛好截止，找第一筆未截止的
+    if(selected && isExpired(selected)){
+      selected = tasks.find(x => !isExpired(x)) || null;
+    }
+    if(selected){
+      elTask.value = selected.id;
+      durationTotal = Number(selected.duration || 30);
+      timeLeft = durationTotal;
+      setTimer(timeLeft);
+      elStatus.innerHTML = `已選擇：<b>${selected.title}</b><span class="sub">請填座號姓名後開始。</span>`;
+    }else{
+      durationTotal = 0; timeLeft = 0;
+      setTimer(0);
+      elStatus.innerHTML = `目前作業皆已截止<span class="sub">請聯繫老師。</span>`;
+    }
+
+    updateBtnState();
+  }
+
+  elTask.addEventListener('change', ()=>{
+    const id = elTask.value;
+    selected = tasks.find(t=>t.id===id) || null;
+    if(selected){
+      durationTotal = Number(selected.duration || 30);
+      timeLeft = durationTotal;
+      setTimer(timeLeft);
+      elStatus.innerHTML = `已選擇：<b>${selected.title}</b><span class="sub">請填座號姓名後開始。</span>`;
+    }
+    updateBtnState();
+  });
+  elSeat.addEventListener('input', updateBtnState);
+  elName.addEventListener('input', updateBtnState);
+
+  async function detectFormat(){
+    const cands = ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/mpeg'];
+    let best = '';
+    if(window.MediaRecorder){
+      for(const c of cands){
+        if(MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)){ best = c; break; }
+      }
+    }
+    fmt.textContent = best ? best : '自動';
+    return best;
+  }
+
+  async function requestMicOnce(){
+    try{
+      setMicState('wait','麥克風狀態：請求權限中…');
+      const st = await navigator.mediaDevices.getUserMedia({ audio:true });
+      st.getTracks().forEach(tr=>tr.stop());
+      setMicState('ok','麥克風狀態：已開啟（可錄音）');
+      elStatus.innerHTML = `✅ 麥克風正常<span class="sub">現在可以開始錄音。</span>`;
+    }catch(err){
+      setMicState('no','麥克風狀態：未開啟（請允許權限）');
+      elStatus.innerHTML = `❌ 麥克風不可用<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
+    }
+  }
+
+  function showHelp(){
+    alert(
+`✅ 權限教學
+
+【電腦 Chrome/Edge】
+1) 看網址列左邊「鎖頭」
+2) 麥克風 → 允許
+3) 重新整理本頁
+
+【iPhone / iPad】
+設定 → Safari（或 Chrome）→ 麥克風 → 允許
+
+【LINE 內建瀏覽器】
+可能無法錄音，請「在瀏覽器開啟」。`
+    );
+  }
+
+  function stopAll(){
+    try{ if(recorder && recorder.state !== 'inactive') recorder.stop(); }catch(e){}
+    try{
+      if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
+    }catch(e){}
+  }
+
+  function clearTimer(){
+    if(timerId){ clearInterval(timerId); timerId = null; }
+  }
+
+  function startCountdown(autoStopFn){
+    clearTimer();
+    setTimer(timeLeft);
+    timerId = setInterval(()=>{
+      timeLeft--;
+      if(timeLeft < 0) timeLeft = 0;
+      setTimer(timeLeft);
+      if(timeLeft <= 0){
+        clearTimer();
+        autoStopFn && autoStopFn();
+      }
+    }, 1000);
+  }
+
+  function blobToBase64(blob){
+    return new Promise((resolve,reject)=>{
+      const fr = new FileReader();
+      fr.onload = () => {
+        const s = String(fr.result||'');
+        const idx = s.indexOf('base64,');
+        resolve(idx >= 0 ? s.slice(idx+7) : s);
+      };
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  function base64ToBase64Url(b64){
+    // base64 -> base64url（避免 + / = 在 form 解析出問題）
+    return String(b64||'')
+      .replace(/\+/g,'-')
+      .replace(/\//g,'_')
+      .replace(/=+$/,'');
+  }
+
+  function openReceiptWindowNow(){
+    // 需在使用者 click 當下開，避免被 popup blocker 擋
+    receiptWin = window.open('about:blank', 'receiptWin');
+    if(receiptWin){
+      receiptWin.document.write('<meta charset="utf-8"><title>回執準備中</title><div style="font-family:system-ui;padding:18px">回執準備中…請勿關閉此分頁。</div>');
+      receiptWin.document.close();
+    }
+  }
+
+  async function startRecordingAndSubmit(){
+    if(!selected){ elStatus.innerHTML = `❌ 請先選擇作業`; return; }
+    if(isExpired(selected)){ elStatus.innerHTML = `❌ 作業已截止`; return; }
+    if(!validInfo()){
+      elStatus.innerHTML = `❌ 請正確填寫座號與姓名<span class="sub">座號 1～99、姓名至少 2 個字。</span>`;
+      return;
+    }
+
+    // 先開回執分頁（使用者手勢）
+    openReceiptWindowNow();
+
+    try{
+      setMicState('wait','麥克風狀態：錄音準備中…');
+      elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">請允許麥克風權限。</span>`;
+
+      const mimeType = await detectFormat();
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      setMicState('ok','麥克風狀態：錄音中');
+
+      chunks = [];
+      recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+      recorder.ondataavailable = e => { if(e.data && e.data.size > 0) chunks.push(e.data); };
+
+      recorder.onstop = async ()=>{
+        try{
+          stopAll();
+          setMicState('wait','麥克風狀態：送出中…');
+          elStatus.innerHTML = `⏫ 送出中…<span class="sub">即將開啟回執分頁。</span>`;
+
+          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+          const b64 = await blobToBase64(blob);
+          const b64u = base64ToBase64Url(b64);
+
+          // 填表單
+          upForm.action = GAS_URL;
+          upForm.target = receiptWin ? 'receiptWin' : '_self';
+
+          f_taskId.value = selected.id;
+          f_seatNo.value = String(elSeat.value||'').trim();
+          f_studentName.value = String(elName.value||'').trim();
+          f_type.value = (recorder.mimeType || 'audio/webm');
+          f_b64u.value = b64u;
+
+          // 送出（最穩：form POST）
+          upForm.submit();
+
+          recording = false;
+          updateBtnState();
+
+          elStatus.innerHTML = `✅ 已送出，請到「回執分頁」截圖<span class="sub">若沒跳出，請允許彈出視窗。</span>`;
+          durationTotal = Number(selected.duration||30);
+          timeLeft = durationTotal;
+          setTimer(timeLeft);
+
+        }catch(err){
+          recording = false;
+          updateBtnState();
+          setMicState('no','麥克風狀態：送出失敗');
+          elStatus.innerHTML = `❌ 送出失敗<span class="sub">${String(err||'')}</span>`;
+        }
+      };
+
+      recorder.start();
+      recording = true;
+      updateBtnState();
+
+      durationTotal = Number(selected.duration||30);
+      timeLeft = durationTotal;
+      setTimer(timeLeft);
+
+      elStatus.innerHTML = `🔴 正在錄音…<span class="sub">倒數結束會自動停止並送出。</span>`;
+
+      startCountdown(()=>{
+        try{ if(recorder && recorder.state !== 'inactive') recorder.stop(); }catch(e){}
+      });
+
+    }catch(err){
+      recording = false;
+      stopAll();
+      clearTimer();
+      setMicState('no','麥克風狀態：未開啟（請允許權限）');
+      elStatus.innerHTML = `❌ 無法開始錄音<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
+      updateBtnState();
+    }
+  }
+
+  // 基本支援檢查
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    setMicState('no','麥克風狀態：此瀏覽器不支援');
+    elStatus.innerHTML = `❌ 你的瀏覽器不支援錄音<span class="sub">請改用 Chrome / Edge / Safari 最新版。</span>`;
+  }else{
+    setMicState('wait','麥克風狀態：尚未授權（可先測試）');
+  }
+
+  btnMicTest.addEventListener('click', requestMicOnce);
+  btnHelp.addEventListener('click', showHelp);
+  elBtn.addEventListener('click', ()=>{
+    if(recording) return;
+    startRecordingAndSubmit();
+  });
+
+  // ====== JSONP callback（GAS 會呼叫）======
+  window.__onCfg = (cfg) => {
+    elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
+    tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
+    selected = null;
+    renderTaskOptions();
+    elStatus.innerHTML = `請先選擇作業並填座號姓名<span class="sub">完成後按開始。</span>`;
+  };
+
+  // ====== 載入 JSONP ======
+  (function loadJsonp(){
+    const s = document.createElement('script');
+    s.src = JSONP_SRC();
+    s.onerror = () => {
+      elStatus.innerHTML = `❌ 載入作業失敗<span class="sub">請確認 GAS_URL 正確、且部署為任何人可存取。</span>`;
+    };
+    document.body.appendChild(s);
+  })();
+
+})();
+</script>
+</body>
+</html>
