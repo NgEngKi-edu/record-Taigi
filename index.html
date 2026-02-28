@@ -53,6 +53,7 @@
     .btn:active{transform:translateY(1px) scale(.99)}
     .btn[disabled]{opacity:.55;cursor:not-allowed;box-shadow:none}
 
+    /* ✅ 狀態文字與進度條各占一整列 + 字體加大 */
     .meta{
       display:flex;
       flex-direction:column;
@@ -156,25 +157,13 @@
   </div>
 </div>
 
-<form id="upForm" method="POST" style="display:none;">
-  <input name="taskId" id="f_taskId" />
-  <input name="seatNo" id="f_seatNo" />
-  <input name="studentName" id="f_studentName" />
-  <input name="type" id="f_type" />
-  <input name="b64u" id="f_b64u" />
-</form>
-
 <script>
 (() => {
-  const GAS_URL = "https://script.google.com/macros/s/AKfycbwy2ZqWHE39mtb8jtARIRDl4fSILR-wcUJmE68f7DPuMct5wIue8saNHx_GOYw8S_8/exec";
+  // ====== 你只要改這個：貼上你的 GAS Web App /exec 連結 ======
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbz_WxVTQY87tqXv3QQo5GUcfvZuIFmbCVGgIdN0dWSly2VeP8cmj4QUVJN88T6FqVY/exec";
+
+  // JSONP：跨網域載入作業清單（不碰 CORS）
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
-
-  // ✅ iPadOS 13+ 會偽裝成 MacIntel，所以用 maxTouchPoints 補抓
-  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-  // ✅ iOS 上容易出現「只留前面一段」的狀況：用 timeslice 讓資料定期吐出
-  const RECORDER_TIMESLICE_MS = 1000;
 
   let tasks = [];
   let selected = null;
@@ -196,27 +185,24 @@
   const btnMicTest = document.querySelector('#micTest');
   const btnHelp = document.querySelector('#help');
 
-  const upForm = document.querySelector('#upForm');
-  const f_taskId = document.querySelector('#f_taskId');
-  const f_seatNo = document.querySelector('#f_seatNo');
-  const f_studentName = document.querySelector('#f_studentName');
-  const f_type = document.querySelector('#f_type');
-  const f_b64u = document.querySelector('#f_b64u');
-
   let mediaStream = null;
-  let recorder = null;
-  let chunks = [];
   let recording = false;
 
   let durationTotal = 0;
   let timeLeft = 0;
   let timerId = null;
 
+  // Wake Lock（支援的瀏覽器才有效）
   let wakeLock = null;
   let wantWakeLock = false;
 
-  // ✅ 保存「我們選到的 mimeType」，避免 iOS recorder.mimeType 為空
-  let selectedMimeType = '';
+  // WebAudio 錄音
+  let audioCtx = null;
+  let srcNode = null;
+  let procNode = null;
+  let zeroGain = null;
+  let pcmChunks = [];
+  let pcmLength = 0;
 
   function setMicState(state, msg){
     micDot.classList.remove('ok','no','wait');
@@ -314,46 +300,6 @@
   elSeat.addEventListener('input', updateBtnState);
   elName.addEventListener('input', updateBtnState);
 
-  // ✅ 修正點 1：iOS 優先選 audio/mp4（m4a），避免 Drive 播放問題
-  async function detectFormat(){
-    const candsIOS = [
-      'audio/mp4',
-      'audio/mpeg',
-      'audio/webm;codecs=opus',
-      'audio/webm'
-    ];
-    const candsOther = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/mp4',
-      'audio/mpeg'
-    ];
-    const cands = IS_IOS ? candsIOS : candsOther;
-
-    let best = '';
-    if(window.MediaRecorder && MediaRecorder.isTypeSupported){
-      for(const c of cands){
-        if(MediaRecorder.isTypeSupported(c)){ best = c; break; }
-      }
-    }
-    // 即使 best 空字串，也不要亂寫，後面會 fallback
-    fmt.textContent = best ? best : '自動';
-    return best;
-  }
-
-  async function requestMicOnce(){
-    try{
-      setMicState('wait','麥克風狀態：請求權限中…');
-      const st = await navigator.mediaDevices.getUserMedia({ audio:true });
-      st.getTracks().forEach(tr=>tr.stop());
-      setMicState('ok','麥克風狀態：已開啟（可錄音）');
-      elStatus.innerHTML = `✅ 麥克風正常<span class="sub">現在可以開始錄音。</span>`;
-    }catch(err){
-      setMicState('no','麥克風狀態：未開啟（請允許權限）');
-      elStatus.innerHTML = `❌ 麥克風不可用<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
-    }
-  }
-
   function showHelp(){
     alert(
 `✅ 權限教學
@@ -371,40 +317,22 @@
     );
   }
 
-  function stopAll(){
-    try{ if(recorder && recorder.state !== 'inactive') recorder.stop(); }catch(e){}
+  async function requestMicOnce(){
     try{
-      if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
-    }catch(e){}
+      setMicState('wait','麥克風狀態：請求權限中…');
+      const st = await navigator.mediaDevices.getUserMedia({ audio:true });
+      st.getTracks().forEach(tr=>tr.stop());
+      setMicState('ok','麥克風狀態：已開啟（可錄音）');
+      elStatus.innerHTML = `✅ 麥克風正常<span class="sub">現在可以開始錄音。</span>`;
+    }catch(err){
+      setMicState('no','麥克風狀態：未開啟（請允許權限）');
+      elStatus.innerHTML = `❌ 麥克風不可用<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
+    }
   }
 
   function clearTimer(){
     if(timerId){ clearInterval(timerId); timerId = null; }
   }
-
-  async function requestWakeLock(){
-    try{
-      if (!('wakeLock' in navigator)) return;
-      if (document.visibilityState !== 'visible') return;
-      wakeLock = await navigator.wakeLock.request('screen');
-    }catch(e){}
-  }
-
-  function releaseWakeLock(){
-    try{
-      if (wakeLock){
-        wakeLock.release();
-        wakeLock = null;
-      }
-    }catch(e){}
-  }
-
-  document.addEventListener('visibilitychange', async () => {
-    if (!wantWakeLock) return;
-    if (document.visibilityState === 'visible') {
-      await requestWakeLock();
-    }
-  });
 
   function startCountdown(autoStopFn){
     clearTimer();
@@ -420,6 +348,128 @@
     }, 1000);
   }
 
+  async function requestWakeLock(){
+    try{
+      if (!('wakeLock' in navigator)) return;
+      if (document.visibilityState !== 'visible') return;
+      wakeLock = await navigator.wakeLock.request('screen');
+    }catch(e){
+      // 安靜降級
+    }
+  }
+
+  function releaseWakeLock(){
+    try{ if (wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
+  }
+
+  document.addEventListener('visibilitychange', async () => {
+    if (!wantWakeLock) return;
+    if (document.visibilityState === 'visible') await requestWakeLock();
+  });
+
+  function stopAllAudio(){
+    try{
+      if (procNode){ procNode.disconnect(); procNode.onaudioprocess = null; procNode = null; }
+      if (srcNode){ srcNode.disconnect(); srcNode = null; }
+      if (zeroGain){ zeroGain.disconnect(); zeroGain = null; }
+    }catch(e){}
+
+    try{
+      if (audioCtx){
+        // 不強制 close（iOS 有時會卡），但可以嘗試
+        audioCtx.close && audioCtx.close();
+      }
+    }catch(e){}
+    audioCtx = null;
+
+    try{
+      if (mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
+    }catch(e){}
+  }
+
+  function ensureAudioCtx(){
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  function mergeFloat32(chunks, totalLen){
+    const out = new Float32Array(totalLen);
+    let off = 0;
+    for (const c of chunks){
+      out.set(c, off);
+      off += c.length;
+    }
+    return out;
+  }
+
+  function downsampleBuffer(buffer, inRate, outRate){
+    if (outRate >= inRate) return buffer;
+    const ratio = inRate / outRate;
+    const newLen = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLen);
+    let offsetRes = 0;
+    let offsetBuf = 0;
+    while (offsetRes < result.length){
+      const nextOffsetBuf = Math.round((offsetRes + 1) * ratio);
+      let sum = 0;
+      let count = 0;
+      for (let i = offsetBuf; i < nextOffsetBuf && i < buffer.length; i++){
+        sum += buffer[i];
+        count++;
+      }
+      result[offsetRes] = count ? (sum / count) : 0;
+      offsetRes++;
+      offsetBuf = nextOffsetBuf;
+    }
+    return result;
+  }
+
+  function floatTo16BitPCM(float32){
+    const out = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++){
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      out[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF) | 0;
+    }
+    return out;
+  }
+
+  function writeString(view, offset, str){
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+
+  function encodeWavPCM(samples16, sampleRate){
+    const numChannels = 1;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = samples16.length * bytesPerSample;
+
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM
+    view.setUint16(20, 1, true);  // format
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true); // bits
+
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples16.length; i++, offset += 2){
+      view.setInt16(offset, samples16[i], true);
+    }
+    return buffer;
+  }
+
   function blobToBase64(blob){
     return new Promise((resolve,reject)=>{
       const fr = new FileReader();
@@ -433,27 +483,17 @@
     });
   }
 
-  function base64ToBase64Url(b64){
-    return String(b64||'')
-      .replace(/\+/g,'-')
-      .replace(/\//g,'_')
-      .replace(/=+$/,'');
+  function makeToken(){
+    try{
+      if (crypto && crypto.randomUUID) return crypto.randomUUID();
+    }catch(e){}
+    return 't' + Date.now() + '_' + Math.random().toString(16).slice(2);
   }
 
-  // ✅ 修正點 2：停止前先 requestData，再稍等一下 stop（iOS 更穩）
-  function safeStopRecorder(){
-    try{
-      if(!recorder) return;
-      if(recorder.state === 'inactive') return;
-      if(typeof recorder.requestData === 'function'){
-        try{ recorder.requestData(); }catch(e){}
-      }
-      setTimeout(()=>{
-        try{
-          if(recorder && recorder.state !== 'inactive') recorder.stop();
-        }catch(e){}
-      }, 150);
-    }catch(e){}
+  async function detectFormat(){
+    // 統一格式：WAV(16kHz)（各裝置/電腦皆可直接播放）
+    fmt.textContent = 'WAV (16kHz)';
+    return 'audio/wav';
   }
 
   async function startRecordingAndSubmit(){
@@ -468,68 +508,37 @@
       wantWakeLock = true;
       await requestWakeLock();
 
+      await detectFormat();
+
       setMicState('wait','麥克風狀態：錄音準備中…');
       elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">請允許麥克風權限。</span>`;
 
-      selectedMimeType = await detectFormat();
-
+      // 取得麥克風
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      setMicState('ok','麥克風狀態：錄音中');
 
-      chunks = [];
+      // WebAudio 開始收 PCM
+      ensureAudioCtx();
+      pcmChunks = []; pcmLength = 0;
 
-      // ✅ 若 selectedMimeType 空字串就不要硬塞 options（讓瀏覽器自己選）
-      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
-      recorder = new MediaRecorder(mediaStream, options);
+      srcNode = audioCtx.createMediaStreamSource(mediaStream);
+      procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      zeroGain = audioCtx.createGain();
+      zeroGain.gain.value = 0;
 
-      recorder.ondataavailable = e => { if(e.data && e.data.size > 0) chunks.push(e.data); };
-
-      recorder.onstop = async ()=>{
-        try{
-          stopAll();
-          setMicState('wait','麥克風狀態：送出中…');
-          elStatus.innerHTML = `⏫ 送出中…<span class="sub">請稍候，將顯示回執頁。</span>`;
-
-          // ✅ 修正點 3：用「實際可用」的 type（避免 iOS recorder.mimeType 為空）
-          const finalType = (recorder && recorder.mimeType) ? recorder.mimeType
-                         : (selectedMimeType || (IS_IOS ? 'audio/mp4' : 'audio/webm'));
-
-          const blob = new Blob(chunks, { type: finalType });
-          const b64 = await blobToBase64(blob);
-          const b64u = base64ToBase64Url(b64);
-
-          upForm.action = GAS_URL;
-          upForm.target = '_self';
-
-          f_taskId.value = selected.id;
-          f_seatNo.value = String(elSeat.value||'').trim();
-          f_studentName.value = String(elName.value||'').trim();
-          f_type.value = finalType;
-          f_b64u.value = b64u;
-
-          upForm.submit();
-
-          wantWakeLock = false;
-          releaseWakeLock();
-
-        }catch(err){
-          wantWakeLock = false;
-          releaseWakeLock();
-
-          recording = false;
-          updateBtnState();
-          setMicState('no','麥克風狀態：送出失敗');
-          elStatus.innerHTML = `❌ 送出失敗<span class="sub">${String(err||'')}</span>`;
-        }
+      procNode.onaudioprocess = (ev) => {
+        const input = ev.inputBuffer.getChannelData(0);
+        // 複製一份（避免 buffer 被重用）
+        const copy = new Float32Array(input.length);
+        copy.set(input);
+        pcmChunks.push(copy);
+        pcmLength += copy.length;
       };
 
-      // ✅ 修正點 4：iOS 使用 timeslice 讓資料固定吐出（避免只拿到前段）
-      try{
-        recorder.start(RECORDER_TIMESLICE_MS);
-      }catch(e){
-        recorder.start();
-      }
+      srcNode.connect(procNode);
+      procNode.connect(zeroGain);
+      zeroGain.connect(audioCtx.destination);
 
+      setMicState('ok','麥克風狀態：錄音中');
       recording = true;
       updateBtnState();
 
@@ -539,19 +548,83 @@
 
       elStatus.innerHTML = `🔴 正在錄音…<span class="sub">倒數結束會自動停止並送出。</span>`;
 
-      startCountdown(()=>{
-        safeStopRecorder();
+      startCountdown(async ()=>{
+        try{
+          // 停止收音
+          recording = false;
+          updateBtnState();
+          clearTimer();
+
+          setMicState('wait','麥克風狀態：處理音檔中…');
+          elStatus.innerHTML = `🧾 產生音檔中…<span class="sub">完成後會自動送出並跳回執頁。</span>`;
+
+          // 先停掉 WebAudio callback，避免處理時還繼續塞資料（Safari/iOS 特別需要）
+          const inRate = audioCtx.sampleRate;
+          try{
+            if (procNode) procNode.onaudioprocess = null;
+            if (srcNode) srcNode.disconnect();
+            if (procNode) procNode.disconnect();
+            if (zeroGain) zeroGain.disconnect();
+          }catch(e){}
+
+          // 將 PCM 資料合併為 WAV
+          const merged = mergeFloat32(pcmChunks, pcmLength);
+          const down = downsampleBuffer(merged, inRate, 16000);
+          const pcm16 = floatTo16BitPCM(down);
+          const wavBuf = encodeWavPCM(pcm16, 16000);
+          const wavBlob = new Blob([wavBuf], { type: 'audio/wav' });
+          const b64 = await blobToBase64(wavBlob);
+
+          // 釋放資源
+          stopAllAudio();
+
+          setMicState('wait','麥克風狀態：送出中…');
+          elStatus.innerHTML = `⏫ 送出中…<span class="sub">請稍候，將顯示回執頁。</span>`;
+
+          const token = makeToken();
+          const payload = {
+            token,
+            taskId: selected.id,
+            seatNo: String(elSeat.value||'').trim(),
+            studentName: String(elName.value||'').trim(),
+            type: 'audio/wav',
+            base64: b64
+          };
+
+          // ✅ iOS 修正重點：不再用 form 超長欄位送 b64u（會被截斷）
+          await fetch(`${GAS_URL}?api=uploadV2`, {
+            method: 'POST',
+            mode: 'no-cors',
+            body: JSON.stringify(payload)
+          });
+
+          wantWakeLock = false;
+          releaseWakeLock();
+
+          // 跳到回執頁
+          location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(token)}`;
+
+        }catch(err){
+          wantWakeLock = false;
+          releaseWakeLock();
+
+          stopAllAudio();
+
+          setMicState('no','麥克風狀態：送出失敗');
+          elStatus.innerHTML = `❌ 送出失敗<span class="sub">${String(err && err.message ? err.message : err)}</span>`;
+          recording = false;
+          updateBtnState();
+        }
       });
 
     }catch(err){
       wantWakeLock = false;
       releaseWakeLock();
-
-      recording = false;
-      stopAll();
+      stopAllAudio();
       clearTimer();
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
       elStatus.innerHTML = `❌ 無法開始錄音<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
+      recording = false;
       updateBtnState();
     }
   }
@@ -570,6 +643,7 @@
     startRecordingAndSubmit();
   });
 
+  // ====== JSONP callback（GAS 會呼叫）======
   window.__onCfg = (cfg) => {
     elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
     tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
@@ -577,6 +651,7 @@
     renderTaskOptions();
   };
 
+  // ====== 載入 JSONP ======
   (function loadJsonp(){
     const s = document.createElement('script');
     s.src = JSONP_SRC();
