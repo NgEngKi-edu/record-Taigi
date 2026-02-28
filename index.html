@@ -53,7 +53,6 @@
     .btn:active{transform:translateY(1px) scale(.99)}
     .btn[disabled]{opacity:.55;cursor:not-allowed;box-shadow:none}
 
-    /* ✅（需求 4）狀態文字與進度條各占一整列 + 字體加大 */
     .meta{
       display:flex;
       flex-direction:column;
@@ -141,7 +140,6 @@
         <button class="sbtn" id="help">🧩 權限教學</button>
       </div>
 
-      <!-- ✅（需求 3）刪除「最穩模式」說明，改成必要步驟 -->
       <div class="help">
         使用步驟：1) 選擇作業　2) 輸入座號與姓名　3) 按下開始錄音（結束後自動送出並顯示回執頁）
       </div>
@@ -158,7 +156,6 @@
   </div>
 </div>
 
-<!-- 隱藏上傳表單：送到 GAS（form POST） -->
 <form id="upForm" method="POST" style="display:none;">
   <input name="taskId" id="f_taskId" />
   <input name="seatNo" id="f_seatNo" />
@@ -169,11 +166,15 @@
 
 <script>
 (() => {
-  // ====== 你只要改這個：貼上你的 GAS Web App /exec 連結 ======
   const GAS_URL = "https://script.google.com/macros/s/AKfycbwy2ZqWHE39mtb8jtARIRDl4fSILR-wcUJmE68f7DPuMct5wIue8saNHx_GOYw8S_8/exec";
-
-  // JSONP：跨網域載入作業清單（不碰 CORS）
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
+
+  // ✅ iPadOS 13+ 會偽裝成 MacIntel，所以用 maxTouchPoints 補抓
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  // ✅ iOS 上容易出現「只留前面一段」的狀況：用 timeslice 讓資料定期吐出
+  const RECORDER_TIMESLICE_MS = 1000;
 
   let tasks = [];
   let selected = null;
@@ -210,9 +211,12 @@
   let durationTotal = 0;
   let timeLeft = 0;
   let timerId = null;
-  
+
   let wakeLock = null;
-  let wantWakeLock = false; // 只有錄音中才需要保持螢幕常亮
+  let wantWakeLock = false;
+
+  // ✅ 保存「我們選到的 mimeType」，避免 iOS recorder.mimeType 為空
+  let selectedMimeType = '';
 
   function setMicState(state, msg){
     micDot.classList.remove('ok','no','wait');
@@ -310,14 +314,29 @@
   elSeat.addEventListener('input', updateBtnState);
   elName.addEventListener('input', updateBtnState);
 
+  // ✅ 修正點 1：iOS 優先選 audio/mp4（m4a），避免 Drive 播放問題
   async function detectFormat(){
-    const cands = ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/mpeg'];
+    const candsIOS = [
+      'audio/mp4',
+      'audio/mpeg',
+      'audio/webm;codecs=opus',
+      'audio/webm'
+    ];
+    const candsOther = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/mpeg'
+    ];
+    const cands = IS_IOS ? candsIOS : candsOther;
+
     let best = '';
-    if(window.MediaRecorder){
+    if(window.MediaRecorder && MediaRecorder.isTypeSupported){
       for(const c of cands){
-        if(MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)){ best = c; break; }
+        if(MediaRecorder.isTypeSupported(c)){ best = c; break; }
       }
     }
+    // 即使 best 空字串，也不要亂寫，後面會 fallback
     fmt.textContent = best ? best : '自動';
     return best;
   }
@@ -362,15 +381,13 @@
   function clearTimer(){
     if(timerId){ clearInterval(timerId); timerId = null; }
   }
-  
+
   async function requestWakeLock(){
     try{
-      if (!('wakeLock' in navigator)) return; // 不支援就略過
-      if (document.visibilityState !== 'visible') return; // 不在前景就先不鎖
+      if (!('wakeLock' in navigator)) return;
+      if (document.visibilityState !== 'visible') return;
       wakeLock = await navigator.wakeLock.request('screen');
-    }catch(e){
-      // 失敗就安靜降級，不要影響錄音流程
-    }
+    }catch(e){}
   }
 
   function releaseWakeLock(){
@@ -381,8 +398,8 @@
       }
     }catch(e){}
   }
-  
-   document.addEventListener('visibilitychange', async () => {
+
+  document.addEventListener('visibilitychange', async () => {
     if (!wantWakeLock) return;
     if (document.visibilityState === 'visible') {
       await requestWakeLock();
@@ -423,6 +440,22 @@
       .replace(/=+$/,'');
   }
 
+  // ✅ 修正點 2：停止前先 requestData，再稍等一下 stop（iOS 更穩）
+  function safeStopRecorder(){
+    try{
+      if(!recorder) return;
+      if(recorder.state === 'inactive') return;
+      if(typeof recorder.requestData === 'function'){
+        try{ recorder.requestData(); }catch(e){}
+      }
+      setTimeout(()=>{
+        try{
+          if(recorder && recorder.state !== 'inactive') recorder.stop();
+        }catch(e){}
+      }, 150);
+    }catch(e){}
+  }
+
   async function startRecordingAndSubmit(){
     if(!selected){ elStatus.innerHTML = `❌ 請先選擇作業`; return; }
     if(isExpired(selected)){ elStatus.innerHTML = `❌ 作業已截止`; return; }
@@ -434,16 +467,21 @@
     try{
       wantWakeLock = true;
       await requestWakeLock();
-	  
-	  setMicState('wait','麥克風狀態：錄音準備中…');
+
+      setMicState('wait','麥克風狀態：錄音準備中…');
       elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">請允許麥克風權限。</span>`;
 
-      const mimeType = await detectFormat();
+      selectedMimeType = await detectFormat();
+
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
       setMicState('ok','麥克風狀態：錄音中');
 
       chunks = [];
-      recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+
+      // ✅ 若 selectedMimeType 空字串就不要硬塞 options（讓瀏覽器自己選）
+      const options = selectedMimeType ? { mimeType: selectedMimeType } : undefined;
+      recorder = new MediaRecorder(mediaStream, options);
+
       recorder.ondataavailable = e => { if(e.data && e.data.size > 0) chunks.push(e.data); };
 
       recorder.onstop = async ()=>{
@@ -452,36 +490,46 @@
           setMicState('wait','麥克風狀態：送出中…');
           elStatus.innerHTML = `⏫ 送出中…<span class="sub">請稍候，將顯示回執頁。</span>`;
 
-          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+          // ✅ 修正點 3：用「實際可用」的 type（避免 iOS recorder.mimeType 為空）
+          const finalType = (recorder && recorder.mimeType) ? recorder.mimeType
+                         : (selectedMimeType || (IS_IOS ? 'audio/mp4' : 'audio/webm'));
+
+          const blob = new Blob(chunks, { type: finalType });
           const b64 = await blobToBase64(blob);
           const b64u = base64ToBase64Url(b64);
 
-          // 填表單（✅ 回執頁：錄音完成後才顯示，因此直接在同頁送出）
           upForm.action = GAS_URL;
           upForm.target = '_self';
 
           f_taskId.value = selected.id;
           f_seatNo.value = String(elSeat.value||'').trim();
           f_studentName.value = String(elName.value||'').trim();
-          f_type.value = (recorder.mimeType || 'audio/webm');
+          f_type.value = finalType;
           f_b64u.value = b64u;
 
           upForm.submit();
-		  wantWakeLock = false;
+
+          wantWakeLock = false;
           releaseWakeLock();
 
         }catch(err){
           wantWakeLock = false;
           releaseWakeLock();
-		  
-		  recording = false;
+
+          recording = false;
           updateBtnState();
           setMicState('no','麥克風狀態：送出失敗');
           elStatus.innerHTML = `❌ 送出失敗<span class="sub">${String(err||'')}</span>`;
         }
       };
 
-      recorder.start();
+      // ✅ 修正點 4：iOS 使用 timeslice 讓資料固定吐出（避免只拿到前段）
+      try{
+        recorder.start(RECORDER_TIMESLICE_MS);
+      }catch(e){
+        recorder.start();
+      }
+
       recording = true;
       updateBtnState();
 
@@ -492,14 +540,14 @@
       elStatus.innerHTML = `🔴 正在錄音…<span class="sub">倒數結束會自動停止並送出。</span>`;
 
       startCountdown(()=>{
-        try{ if(recorder && recorder.state !== 'inactive') recorder.stop(); }catch(e){}
+        safeStopRecorder();
       });
 
     }catch(err){
       wantWakeLock = false;
       releaseWakeLock();
-	  
-	  recording = false;
+
+      recording = false;
       stopAll();
       clearTimer();
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
@@ -522,7 +570,6 @@
     startRecordingAndSubmit();
   });
 
-  // ====== JSONP callback（GAS 會呼叫）======
   window.__onCfg = (cfg) => {
     elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
     tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
@@ -530,7 +577,6 @@
     renderTaskOptions();
   };
 
-  // ====== 載入 JSONP ======
   (function loadJsonp(){
     const s = document.createElement('script');
     s.src = JSONP_SRC();
