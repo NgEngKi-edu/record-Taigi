@@ -31,7 +31,7 @@
     .subt{color:var(--muted);font-size:13px;margin-top:2px}
     .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px;align-items:start}
     @media (max-width:820px){.grid{grid-template-columns:1fr}}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:16px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:16px}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     .pill{display:inline-flex;align-items:center;gap:8px;padding:10px 12px;border-radius:999px;border:1px solid var(--line);background:#F9FAFB;font-size:13px;color:var(--muted)}
     .dot{width:10px;height:10px;border-radius:999px;background:#9CA3AF;box-shadow:0 0 0 4px rgba(156,163,175,.18)}
@@ -137,7 +137,7 @@
 
 <script>
 (() => {
-  // GAS Web App /exec
+  // GAS Web App /exec（保持你原本的）
   const GAS_URL = "https://script.google.com/macros/s/AKfycbwK2iLgREG52ReX_CLUQdai-iiAUzDNubkRKhAXL03Gk4QjkbJe71IKQ4pFQLFAPlg/exec";
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
 
@@ -145,13 +145,15 @@
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-  // 參考你「音量一致」的舊版：用預設的瀏覽器音訊處理（AGC/NS/EC）
-  // 並用 AudioWorklet 取樣，避免 Android ScriptProcessor 斷斷續續
+  // ✅ 只新增 Android 判斷（其餘不動）
+  const IS_ANDROID = /Android/i.test(navigator.userAgent);
+
+  // ✅ 維持你目前的音量策略：iOS/非 Android 仍開啟處理；Android 關掉避免 gating 斷音
   const AUDIO_CONSTRAINTS = {
     channelCount: 1,
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true
+    echoCancellation: IS_ANDROID ? false : true,
+    noiseSuppression: IS_ANDROID ? false : true,
+    autoGainControl: IS_ANDROID ? false : true
   };
 
   let tasks = [];
@@ -311,13 +313,15 @@
       st.getTracks().forEach(tr=>tr.stop());
       setMicState('ok','麥克風狀態：已開啟（可錄音）');
       elStatus.innerHTML = `✅ 麥克風正常<span class="sub">現在可以開始錄音。</span>`;
-    } catch(err) {
+    }catch(err){
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
       elStatus.innerHTML = `❌ 麥克風不可用<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
     }
   }
 
-  function clearTimer(){ if(timerId){ clearInterval(timerId); timerId=null; } }
+  function clearTimer(){
+    if(timerId){ clearInterval(timerId); timerId=null; }
+  }
 
   function startCountdown(autoStopFn){
     clearTimer();
@@ -392,27 +396,28 @@
     return result;
   }
 
-  // ✅ 參考 Android 音量：把峰值拉到接近 0.98（只會放大，不會把原本夠大聲的縮小）
+  // 維持原本音量（峰值拉到 0.98，只放大不縮小）
   function normalizePeak(samples){
-    // remove DC
     let mean = 0;
     for(let i=0;i<samples.length;i++) mean += samples[i];
     mean /= Math.max(1, samples.length);
     for(let i=0;i<samples.length;i++) samples[i] -= mean;
 
     let peak = 0;
-    for(let i=0;i<samples.length;i++){ const a = Math.abs(samples[i]); if(a>peak) peak=a; }
+    for(let i=0;i<samples.length;i++){
+      const a = Math.abs(samples[i]);
+      if(a>peak) peak=a;
+    }
     if(!peak || peak < 1e-6) return samples;
 
     const TARGET = 0.98;
-    const MAX_GAIN = 80; // iPad/iPhone 偶爾會非常小聲，允許大一點
+    const MAX_GAIN = 80;
     let gain = TARGET / peak;
     if (gain < 1) gain = 1;
     if (gain > MAX_GAIN) gain = MAX_GAIN;
 
-    for(let i=0;i<samples.length;i++){ 
+    for(let i=0;i<samples.length;i++){
       let v = samples[i] * gain;
-      // limiter
       if (v > 0.995) v = 0.995;
       if (v < -0.995) v = -0.995;
       samples[i] = v;
@@ -422,14 +427,16 @@
 
   function floatTo16BitPCM(float32){
     const out = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++){ 
+    for (let i = 0; i < float32.length; i++){
       let s = Math.max(-1, Math.min(1, float32[i]));
       out[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF) | 0;
     }
     return out;
   }
 
-  function writeString(view, offset, str){ for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); }
+  function writeString(view, offset, str){
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
 
   function encodeWavPCM(samples16, sampleRate){
     const numChannels = 1;
@@ -458,7 +465,9 @@
     view.setUint32(40, dataSize, true);
 
     let offset = 44;
-    for (let i = 0; i < samples16.length; i++, offset += 2) view.setInt16(offset, samples16[i], true);
+    for (let i = 0; i < samples16.length; i++, offset += 2){
+      view.setInt16(offset, samples16[i], true);
+    }
     return buffer;
   }
 
@@ -527,7 +536,10 @@
   async function startRecordingAndSubmit(){
     if(!selected){ elStatus.innerHTML = `❌ 請先選擇作業`; return; }
     if(isExpired(selected)){ elStatus.innerHTML = `❌ 作業已截止`; return; }
-    if(!validInfo()){ elStatus.innerHTML = `❌ 請正確填寫座號與姓名<span class="sub">座號 1～99、姓名至少 2 個字。</span>`; return; }
+    if(!validInfo()){
+      elStatus.innerHTML = `❌ 請正確填寫座號與姓名<span class="sub">座號 1～99、姓名至少 2 個字。</span>`;
+      return;
+    }
 
     try{
       wantWakeLock = true;
@@ -593,7 +605,10 @@
 
           const inRate = audioCtx.sampleRate;
 
-          if(workletNode){ try{ workletNode.port.postMessage({ cmd:'flush' }); }catch(e){} await new Promise(r=>setTimeout(r, 80)); }
+          if(workletNode){
+            try{ workletNode.port.postMessage({ cmd:'flush' }); }catch(e){}
+            await new Promise(r=>setTimeout(r, 80));
+          }
 
           try{
             if (srcNode) srcNode.disconnect();
@@ -604,7 +619,7 @@
 
           const merged = mergeFloat32(pcmChunks, pcmLength);
           let down = downsampleBuffer(merged, inRate, 16000);
-          down = normalizePeak(down); // ✅ 統一音量（接近 Android）
+          down = normalizePeak(down);
           const pcm16 = floatTo16BitPCM(down);
           const wavBuf = encodeWavPCM(pcm16, 16000);
           const wavBlob = new Blob([wavBuf], { type: 'audio/wav' });
@@ -636,7 +651,7 @@
 
           location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(token)}`;
 
-        } catch(err) {
+        }catch(err){
           wantWakeLock = false;
           releaseWakeLock();
           stopAllAudio();
@@ -647,7 +662,7 @@
         }
       });
 
-    } catch(err) {
+    }catch(err){
       wantWakeLock = false;
       releaseWakeLock();
       stopAllAudio();
@@ -685,6 +700,7 @@
     };
     document.body.appendChild(s);
   })();
+
 })();
 </script>
 </body>
