@@ -219,31 +219,12 @@
     return true;
   }
 
-  function parseTaipeiDeadlineMs(deadlineStr){
-	if(!deadlineStr) return NaN;
-	const s = String(deadlineStr).trim();
-
-	// 1) 已含時區（Z 或 ±HH:MM）→ 交給 Date.parse
-	if (/[zZ]|[+\-]\d{2}:\d{2}$/.test(s)) {
-		const t = Date.parse(s);
-		return Number.isNaN(t) ? NaN : t;
-	}
-
-	// 2) 沒含時區（例如 datetime-local: YYYY-MM-DDTHH:mm 或含秒）→ 當作「台北時間」解析
-	const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
-	if(!m) return NaN;
-
-	const Y = +m[1], Mo = +m[2], D = +m[3], H = +m[4], Mi = +m[5], Se = +(m[6] || 0);
-
-	// 台北 = UTC+8，所以把台北時間換成 UTC 毫秒：UTC = 台北 - 8 小時
-	return Date.UTC(Y, Mo - 1, D, H - 8, Mi, Se);
-	}
-
-function isExpired(task){
-  if(!task || !task.deadline) return false;
-  const ts = parseTaipeiDeadlineMs(task.deadline);
-  return !Number.isNaN(ts) && ts < Date.now();
-}
+  function isExpired(task){
+    if(!task || !task.deadline) return false;
+    const ts = Date.parse(task.deadline);
+    if(Number.isNaN(ts)) return false;
+    return ts < Date.now();
+  }
 
   function updateBtnState(){
     const ok = !!selected && validInfo() && !isExpired(selected);
