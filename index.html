@@ -52,6 +52,7 @@
     }
     .btn:active{transform:translateY(1px) scale(.99)}
     .btn[disabled]{opacity:.55;cursor:not-allowed;box-shadow:none}
+    .btn.danger{background:linear-gradient(135deg,#EF4444 0%,#DC2626 70%);box-shadow:0 16px 26px rgba(239,68,68,.18);}
 
     .meta{display:flex;flex-direction:column;align-items:stretch;margin-top:12px;gap:10px;}
     .status{width:100%;font-size:16px;color:var(--muted);line-height:1.5;}
@@ -67,6 +68,9 @@
     .sbtn{border:1px solid var(--line);background:#fff;color:#111827;padding:10px 12px;border-radius:14px;font-weight:800;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:8px}
     .sbtn:active{transform:translateY(1px)}
     .smallBtnRow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+
+    .review{margin-top:12px;border-top:1px dashed var(--line);padding-top:12px;display:none;}
+    audio{width:100%;}
   </style>
 </head>
 <body>
@@ -75,7 +79,7 @@
     <div class="logo" aria-hidden="true"></div>
     <div>
       <h1 id="title">錄音作業</h1>
-      <div class="subt">選作業 → 填座號姓名 → 開始錄音（結束後顯示回執頁）</div>
+      <div class="subt">選作業 → 填座號姓名 → 開始錄音 → 停止 → 確認上傳/取消</div>
     </div>
   </div>
 
@@ -100,12 +104,22 @@
         </div>
       </div>
 
-      <button class="btn" id="btn" style="margin-top:12px;" disabled>開始錄音並送出</button>
+      <button class="btn" id="startBtn" style="margin-top:12px;" disabled>🎙️ 開始錄音</button>
+      <button class="btn danger" id="stopBtn" style="margin-top:10px;" disabled>⏹️ 停止錄音</button>
+
+      <div class="review" id="reviewArea">
+        <div class="label">試聽（確認沒問題再上傳）</div>
+        <audio id="preview" controls></audio>
+        <div class="row" style="margin-top:10px;justify-content:flex-end;">
+          <button class="sbtn" id="cancelBtn">↩️ 取消重錄</button>
+          <button class="sbtn" id="uploadBtn">✅ 確認上傳</button>
+        </div>
+      </div>
 
       <div class="meta">
         <div class="status" id="status">
           載入作業中…
-          <span class="sub">第一次會要求麥克風權限，請按「允許」。</span>
+          <span class="sub">最長錄音 2 分鐘；可自行按停止。</span>
         </div>
 
         <div class="timer">
@@ -120,7 +134,7 @@
       </div>
 
       <div class="help">
-        使用步驟：1) 選擇作業　2) 輸入座號與姓名　3) 按下開始錄音（結束後自動送出並顯示回執頁）
+        使用步驟：1) 選擇作業　2) 輸入座號與姓名　3) 按「開始錄音」→ 需要時按「停止」→ 試聽後按「確認上傳」或「取消重錄」
       </div>
     </div>
 
@@ -129,7 +143,7 @@
       <div class="help">
         ・LINE 內建瀏覽器可能無法錄音，請「在瀏覽器開啟」。<br/>
         ・iPad/iPhone 建議 Safari/Chrome 最新版，並允許麥克風權限。<br/>
-        ・錄音秒數太長會導致檔案太大，建議 20～60 秒。<br/>
+        ・若忘記按停止，最長 2 分鐘會自動停止。<br/>
       </div>
     </div>
   </div>
@@ -141,12 +155,9 @@
   const GAS_URL = "https://script.google.com/macros/s/AKfycbxI79MsZaVEOkDhaRTd2N-6R7VGWGUBinRIeRystPyXptNJpfZQc7s_sLit8_dwhi0/exec";
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
 
-  // iPadOS 13+ 會偽裝成 MacIntel
-  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const MAX_SECONDS = 120; // ✅ 使用者可自行停止，但最長 2 分鐘
 
-  // 參考你「音量一致」的舊版：用預設的瀏覽器音訊處理（AGC/NS/EC）
-  // 並用 AudioWorklet 取樣，避免 Android ScriptProcessor 斷斷續續
+  // WebRTC 音訊處理（保持你目前的音量策略）
   const AUDIO_CONSTRAINTS = {
     channelCount: 1,
     echoCancellation: true,
@@ -161,22 +172,29 @@
   const elTask = document.querySelector('#taskSel');
   const elSeat = document.querySelector('#seatNo');
   const elName = document.querySelector('#stuName');
-  const elBtn  = document.querySelector('#btn');
-  const elStatus = document.querySelector('#status');
 
+  const btnStart = document.querySelector('#startBtn');
+  const btnStop  = document.querySelector('#stopBtn');
+  const btnUpload = document.querySelector('#uploadBtn');
+  const btnCancel = document.querySelector('#cancelBtn');
+
+  const elStatus = document.querySelector('#status');
   const micDot = document.querySelector('#micDot');
   const micText = document.querySelector('#micText');
-
   const bar = document.querySelector('#bar');
   const t = document.querySelector('#t');
 
   const btnMicTest = document.querySelector('#micTest');
   const btnHelp = document.querySelector('#help');
 
-  let recording = false;
-  let durationTotal = 0;
-  let timeLeft = 0;
-  let timerId = null;
+  const reviewArea = document.querySelector('#reviewArea');
+  const preview = document.querySelector('#preview');
+
+  // state
+  let state = 'idle'; // idle | recording | review | uploading
+  let elapsedTimer = null;
+  let startedAt = 0;
+  let elapsedSec = 0;
 
   // Wake Lock
   let wakeLock = null;
@@ -194,6 +212,11 @@
   let pcmChunks = [];
   let pcmLength = 0;
 
+  // review data
+  let recordedBlob = null;
+  let recordedUrl = null;
+  let recordMeta = null; // 固定本次錄音的作業/座號/姓名/token（避免中途改欄位造成混亂）
+
   function setMicState(state, msg){
     micDot.classList.remove('ok','no','wait');
     if(state === 'ok') micDot.classList.add('ok');
@@ -202,11 +225,16 @@
     micText.textContent = msg || '麥克風狀態：偵測中';
   }
 
-  function setTimer(sec){
+  function formatTime(sec){
+    sec = Math.max(0, Math.floor(sec));
     const m = Math.floor(sec/60);
     const s = sec%60;
-    t.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-    const pct = durationTotal ? Math.max(0, Math.min(100, ((durationTotal-sec)/durationTotal)*100 )) : 0;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function setTimerUI(elapsed){
+    t.textContent = formatTime(elapsed);
+    const pct = Math.max(0, Math.min(100, (elapsed / MAX_SECONDS) * 100));
     bar.style.width = `${pct}%`;
   }
 
@@ -226,27 +254,45 @@
     return ts < Date.now();
   }
 
-  function updateBtnState(){
-    const ok = !!selected && validInfo() && !isExpired(selected);
-    elBtn.disabled = !ok || recording;
+  function lockInputs(lock){
+    elTask.disabled = lock;
+    elSeat.disabled = lock;
+    elName.disabled = lock;
+  }
+
+  function updateUi(){
+    const canStart = state === 'idle' && !!selected && validInfo() && !isExpired(selected);
+    btnStart.disabled = !canStart;
+    btnStop.disabled = !(state === 'recording');
+    btnUpload.disabled = !(state === 'review' && recordedBlob);
+    btnCancel.disabled = !(state === 'review');
+    reviewArea.style.display = (state === 'review') ? 'block' : 'none';
+
+    // 錄音/上傳中避免改欄位造成混亂
+    lockInputs(state === 'recording' || state === 'uploading');
+
+    if(state === 'idle'){
+      if(preview) preview.pause();
+    }
   }
 
   function renderTaskOptions(){
     elTask.innerHTML = '';
+
     if(!tasks.length){
       const opt = document.createElement('option');
       opt.value = '';
       opt.textContent = '（目前沒有開放作業）';
       elTask.appendChild(opt);
       selected = null;
-      durationTotal = 0; timeLeft = 0;
-      setTimer(0);
+      setTimerUI(0);
       elStatus.innerHTML = `目前沒有開放作業<span class="sub">請稍後再試或聯繫老師。</span>`;
-      updateBtnState();
+      updateUi();
       return;
     }
 
-    tasks.forEach((x, idx)=>{
+    selected = null;
+    for(const x of tasks){
       const opt = document.createElement('option');
       opt.value = x.id;
       const expired = isExpired(x);
@@ -254,38 +300,36 @@
       opt.textContent = `${x.title}${dl}${expired ? '（已截止）' : ''}`;
       if(expired) opt.disabled = true;
       elTask.appendChild(opt);
-      if(idx === 0 && !selected && !expired) selected = x;
-    });
-
-    if(selected && isExpired(selected)) selected = tasks.find(x => !isExpired(x)) || null;
+      // ✅ 自動選第一個未截止作業
+      if(!selected && !expired) selected = x;
+    }
 
     if(selected){
       elTask.value = selected.id;
-      durationTotal = Number(selected.duration || 30);
-      timeLeft = durationTotal;
-      setTimer(timeLeft);
-      elStatus.innerHTML = `請先選擇作業並填座號姓名<span class="sub">完成後按開始。</span>`;
+      setTimerUI(0);
+      const suggest = Number(selected.duration || 0);
+      elStatus.innerHTML = `請先選擇作業並填座號姓名<span class="sub">最長 2 分鐘；${suggest ? `建議：${suggest} 秒（可自行停止）` : `可自行按停止`}。</span>`;
     } else {
-      durationTotal = 0; timeLeft = 0;
-      setTimer(0);
+      setTimerUI(0);
       elStatus.innerHTML = `目前作業皆已截止<span class="sub">請聯繫老師。</span>`;
     }
-    updateBtnState();
+
+    updateUi();
   }
 
   elTask.addEventListener('change', ()=>{
     const id = elTask.value;
     selected = tasks.find(t=>t.id===id) || null;
+    setTimerUI(0);
     if(selected){
-      durationTotal = Number(selected.duration || 30);
-      timeLeft = durationTotal;
-      setTimer(timeLeft);
-      elStatus.innerHTML = `請先選擇作業並填座號姓名<span class="sub">完成後按開始。</span>`;
+      const suggest = Number(selected.duration || 0);
+      elStatus.innerHTML = `已選擇：${selected.title}<span class="sub">最長 2 分鐘；${suggest ? `建議：${suggest} 秒（可自行停止）` : `可自行按停止`}。</span>`;
     }
-    updateBtnState();
+    updateUi();
   });
-  elSeat.addEventListener('input', updateBtnState);
-  elName.addEventListener('input', updateBtnState);
+
+  elSeat.addEventListener('input', updateUi);
+  elName.addEventListener('input', updateUi);
 
   function showHelp(){
     alert(
@@ -315,22 +359,6 @@
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
       elStatus.innerHTML = `❌ 麥克風不可用<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
     }
-  }
-
-  function clearTimer(){ if(timerId){ clearInterval(timerId); timerId=null; } }
-
-  function startCountdown(autoStopFn){
-    clearTimer();
-    setTimer(timeLeft);
-    timerId = setInterval(()=>{
-      timeLeft--;
-      if(timeLeft < 0) timeLeft = 0;
-      setTimer(timeLeft);
-      if(timeLeft <= 0){
-        clearTimer();
-        autoStopFn && autoStopFn();
-      }
-    }, 1000);
   }
 
   async function requestWakeLock(){
@@ -392,9 +420,7 @@
     return result;
   }
 
-  // ✅ 參考 Android 音量：把峰值拉到接近 0.98（只會放大，不會把原本夠大聲的縮小）
   function normalizePeak(samples){
-    // remove DC
     let mean = 0;
     for(let i=0;i<samples.length;i++) mean += samples[i];
     mean /= Math.max(1, samples.length);
@@ -405,14 +431,13 @@
     if(!peak || peak < 1e-6) return samples;
 
     const TARGET = 0.98;
-    const MAX_GAIN = 80; // iPad/iPhone 偶爾會非常小聲，允許大一點
+    const MAX_GAIN = 80;
     let gain = TARGET / peak;
     if (gain < 1) gain = 1;
     if (gain > MAX_GAIN) gain = MAX_GAIN;
 
-    for(let i=0;i<samples.length;i++){ 
+    for(let i=0;i<samples.length;i++){
       let v = samples[i] * gain;
-      // limiter
       if (v > 0.995) v = 0.995;
       if (v < -0.995) v = -0.995;
       samples[i] = v;
@@ -422,7 +447,7 @@
 
   function floatTo16BitPCM(float32){
     const out = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++){ 
+    for (let i = 0; i < float32.length; i++){
       let s = Math.max(-1, Math.min(1, float32[i]));
       out[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF) | 0;
     }
@@ -524,17 +549,52 @@
     return true;
   }
 
-  async function startRecordingAndSubmit(){
+  function clearElapsedTimer(){
+    if(elapsedTimer){ clearInterval(elapsedTimer); elapsedTimer=null; }
+  }
+
+  function startElapsedTimer(){
+    clearElapsedTimer();
+    startedAt = performance.now();
+    elapsedSec = 0;
+    setTimerUI(0);
+    elapsedTimer = setInterval(()=>{
+      elapsedSec = (performance.now() - startedAt) / 1000;
+      if (elapsedSec >= MAX_SECONDS){
+        elapsedSec = MAX_SECONDS;
+        setTimerUI(elapsedSec);
+        stopRecording('timeout');
+        return;
+      }
+      setTimerUI(elapsedSec);
+    }, 200);
+  }
+
+  async function startRecording(){
+    if(state !== 'idle') return;
     if(!selected){ elStatus.innerHTML = `❌ 請先選擇作業`; return; }
     if(isExpired(selected)){ elStatus.innerHTML = `❌ 作業已截止`; return; }
     if(!validInfo()){ elStatus.innerHTML = `❌ 請正確填寫座號與姓名<span class="sub">座號 1～99、姓名至少 2 個字。</span>`; return; }
 
     try{
+      cleanupReview();
+
+      state = 'recording';
+      updateUi();
+
       wantWakeLock = true;
       await requestWakeLock();
 
       setMicState('wait','麥克風狀態：錄音準備中…');
-      elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">請允許麥克風權限。</span>`;
+      elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">開始錄音後，按「停止錄音」結束；最長 2 分鐘。</span>`;
+
+      recordMeta = {
+        token: makeToken(),
+        taskId: selected.id,
+        taskTitle: selected.title,
+        seatNo: String(elSeat.value||'').trim(),
+        studentName: String(elName.value||'').trim()
+      };
 
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
 
@@ -573,110 +633,164 @@
       zeroGain.connect(audioCtx.destination);
 
       setMicState('ok','麥克風狀態：錄音中');
-      recording = true;
-      updateBtnState();
+      elStatus.innerHTML = `🔴 錄音中…<span class="sub">按「停止錄音」結束（最長 2 分鐘）。</span>`;
 
-      durationTotal = Number(selected.duration||30);
-      timeLeft = durationTotal;
-      setTimer(timeLeft);
-
-      elStatus.innerHTML = `🔴 正在錄音…<span class="sub">倒數結束會自動停止並送出。</span>`;
-
-      startCountdown(async ()=>{
-        try{
-          recording = false;
-          updateBtnState();
-          clearTimer();
-
-          setMicState('wait','麥克風狀態：處理音檔中…');
-          elStatus.innerHTML = `🧾 產生音檔中…<span class="sub">完成後會自動送出並跳回執頁。</span>`;
-
-          const inRate = audioCtx.sampleRate;
-
-          if(workletNode){ try{ workletNode.port.postMessage({ cmd:'flush' }); }catch(e){} await new Promise(r=>setTimeout(r, 80)); }
-
-          try{
-            if (srcNode) srcNode.disconnect();
-            if (procNode){ procNode.onaudioprocess = null; procNode.disconnect(); }
-            if (workletNode) workletNode.disconnect();
-            if (zeroGain) zeroGain.disconnect();
-          }catch(e){}
-
-          const merged = mergeFloat32(pcmChunks, pcmLength);
-          let down = downsampleBuffer(merged, inRate, 16000);
-          down = normalizePeak(down); // ✅ 統一音量（接近 Android）
-          const pcm16 = floatTo16BitPCM(down);
-          const wavBuf = encodeWavPCM(pcm16, 16000);
-          const wavBlob = new Blob([wavBuf], { type: 'audio/wav' });
-          const b64 = await blobToBase64(wavBlob);
-
-          stopAllAudio();
-
-          setMicState('wait','麥克風狀態：送出中…');
-          elStatus.innerHTML = `⏫ 送出中…<span class="sub">請稍候，將顯示回執頁。</span>`;
-
-          const token = makeToken();
-          const payload = {
-            token,
-            taskId: selected.id,
-            seatNo: String(elSeat.value||'').trim(),
-            studentName: String(elName.value||'').trim(),
-            type: 'audio/wav',
-            base64: b64
-          };
-
-          await fetch(`${GAS_URL}?api=uploadV2`, {
-            method: 'POST',
-            mode: 'no-cors',
-            body: JSON.stringify(payload)
-          });
-
-          wantWakeLock = false;
-          releaseWakeLock();
-
-          location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(token)}`;
-
-        } catch(err) {
-          wantWakeLock = false;
-          releaseWakeLock();
-          stopAllAudio();
-          setMicState('no','麥克風狀態：送出失敗');
-          elStatus.innerHTML = `❌ 送出失敗<span class="sub">${String(err && err.message ? err.message : err)}</span>`;
-          recording = false;
-          updateBtnState();
-        }
-      });
+      startElapsedTimer();
+      updateUi();
 
     } catch(err) {
+      state = 'idle';
+      updateUi();
       wantWakeLock = false;
       releaseWakeLock();
       stopAllAudio();
-      clearTimer();
+      clearElapsedTimer();
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
       elStatus.innerHTML = `❌ 無法開始錄音<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
-      recording = false;
-      updateBtnState();
     }
   }
 
+  async function stopRecording(reason){
+    if(state !== 'recording') return;
+
+    state = 'uploading';
+    updateUi();
+
+    clearElapsedTimer();
+    elapsedSec = Math.min(MAX_SECONDS, elapsedSec);
+    setTimerUI(elapsedSec);
+
+    setMicState('wait','麥克風狀態：處理音檔中…');
+    elStatus.innerHTML = reason === 'timeout'
+      ? `⏱️ 已達 2 分鐘上限，已自動停止<span class="sub">正在產生音檔…</span>`
+      : `🧾 正在產生音檔…<span class="sub">請稍候。</span>`;
+
+    try{
+      const inRate = audioCtx.sampleRate;
+
+      if(workletNode){
+        try{ workletNode.port.postMessage({ cmd:'flush' }); }catch(e){}
+        await new Promise(r=>setTimeout(r, 80));
+      }
+
+      try{
+        if (srcNode) srcNode.disconnect();
+        if (procNode){ procNode.onaudioprocess = null; procNode.disconnect(); }
+        if (workletNode) workletNode.disconnect();
+        if (zeroGain) zeroGain.disconnect();
+      }catch(e){}
+
+      const merged = mergeFloat32(pcmChunks, pcmLength);
+      let down = downsampleBuffer(merged, inRate, 16000);
+      down = normalizePeak(down);
+      const pcm16 = floatTo16BitPCM(down);
+      const wavBuf = encodeWavPCM(pcm16, 16000);
+      recordedBlob = new Blob([wavBuf], { type: 'audio/wav' });
+
+      recordedUrl = URL.createObjectURL(recordedBlob);
+      preview.src = recordedUrl;
+
+      stopAllAudio();
+
+      state = 'review';
+      setMicState('ok','麥克風狀態：錄音完成（可試聽）');
+      elStatus.innerHTML = `✅ 錄音完成（${formatTime(elapsedSec)}）<span class="sub">請試聽後按「確認上傳」，或按「取消重錄」。</span>`;
+      updateUi();
+
+    } catch(err) {
+      stopAllAudio();
+      recordedBlob = null;
+      if(recordedUrl){ try{ URL.revokeObjectURL(recordedUrl); }catch(e){} recordedUrl=null; }
+      state = 'idle';
+      setMicState('no','麥克風狀態：處理失敗');
+      elStatus.innerHTML = `❌ 產生音檔失敗<span class="sub">${String(err && err.message ? err.message : err)}</span>`;
+      updateUi();
+    }
+  }
+
+  function cleanupReview(){
+    if(preview){ try{ preview.pause(); }catch(e){} preview.removeAttribute('src'); preview.load && preview.load(); }
+    if(recordedUrl){ try{ URL.revokeObjectURL(recordedUrl); }catch(e){} recordedUrl=null; }
+    recordedBlob = null;
+    recordMeta = null;
+    setTimerUI(0);
+  }
+
+  async function uploadRecording(){
+    if(state !== 'review' || !recordedBlob || !recordMeta) return;
+    state = 'uploading';
+    updateUi();
+
+    try{
+      setMicState('wait','麥克風狀態：送出中…');
+      elStatus.innerHTML = `⏫ 送出中…<span class="sub">請稍候，將顯示回執頁。</span>`;
+
+      const b64 = await blobToBase64(recordedBlob);
+
+      const payload = {
+        token: recordMeta.token,
+        taskId: recordMeta.taskId,
+        seatNo: recordMeta.seatNo,
+        studentName: recordMeta.studentName,
+        type: 'audio/wav',
+        base64: b64
+      };
+
+      await fetch(`${GAS_URL}?api=uploadV2`, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: JSON.stringify(payload)
+      });
+
+      wantWakeLock = false;
+      releaseWakeLock();
+
+      location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(recordMeta.token)}`;
+
+    } catch(err) {
+      state = 'review';
+      setMicState('no','麥克風狀態：送出失敗');
+      elStatus.innerHTML = `❌ 上傳失敗<span class="sub">${String(err && err.message ? err.message : err)}</span>`;
+      updateUi();
+    }
+  }
+
+  function cancelRecording(){
+    if(state !== 'review') return;
+    cleanupReview();
+    state = 'idle';
+    setMicState('wait','麥克風狀態：尚未錄音');
+    elStatus.innerHTML = `已取消本次錄音<span class="sub">可重新按「開始錄音」。最長 2 分鐘。</span>`;
+    updateUi();
+  }
+
+  // events
+  btnStart.addEventListener('click', ()=> startRecording());
+  btnStop.addEventListener('click', ()=> stopRecording('user'));
+  btnUpload.addEventListener('click', ()=> uploadRecording());
+  btnCancel.addEventListener('click', ()=> cancelRecording());
+
+  btnMicTest.addEventListener('click', requestMicOnce);
+  btnHelp.addEventListener('click', showHelp);
+
+  // JSONP callback
+  window.__onCfg = (cfg) => {
+    elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
+    tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
+    renderTaskOptions();
+  };
+
+  // init mic state
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     setMicState('no','麥克風狀態：此瀏覽器不支援');
     elStatus.innerHTML = `❌ 你的瀏覽器不支援錄音<span class="sub">請改用 Chrome / Edge / Safari 最新版。</span>`;
+    state = 'idle';
+    updateUi();
   } else {
     setMicState('wait','麥克風狀態：尚未授權（可先測試）');
   }
 
-  btnMicTest.addEventListener('click', requestMicOnce);
-  btnHelp.addEventListener('click', showHelp);
-  elBtn.addEventListener('click', ()=>{ if(recording) return; startRecordingAndSubmit(); });
-
-  window.__onCfg = (cfg) => {
-    elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
-    tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
-    selected = null;
-    renderTaskOptions();
-  };
-
+  // load jsonp
   (function loadJsonp(){
     const s = document.createElement('script');
     s.src = JSONP_SRC();
