@@ -71,6 +71,9 @@
 
     .review{margin-top:12px;border-top:1px dashed var(--line);padding-top:12px;display:none;}
     audio{width:100%;}
+
+    .sample{margin-top:12px;border-top:1px dashed var(--line);padding-top:12px;display:none;}
+    .sample .hint{font-size:13px;color:#6B7280;margin-top:6px}
   </style>
 </head>
 <body>
@@ -79,7 +82,7 @@
     <div class="logo" aria-hidden="true"></div>
     <div>
       <h1 id="title">錄音作業</h1>
-      <div class="subt">選作業 → 填座號姓名 → 開始錄音 → 停止 → 確認上傳/取消</div>
+      <div class="subt">選作業 → 填座號姓名 → 先聽示範 → 開始錄音 → 停止 → 確認上傳/取消</div>
     </div>
   </div>
 
@@ -102,6 +105,13 @@
           <div class="label">姓名</div>
           <input id="stuName" placeholder="例：王小明" maxlength="10" />
         </div>
+      </div>
+
+      <!-- ✅ 示範音檔播放器（在開始錄音按鈕上方） -->
+      <div class="sample" id="sampleArea">
+        <div class="label">示範音檔（可先聽一次）</div>
+        <audio id="samplePlayer" controls></audio>
+        <div class="hint" id="sampleHint">載入中…</div>
       </div>
 
       <button class="btn" id="startBtn" style="margin-top:12px;" disabled>🎙️ 開始錄音</button>
@@ -134,7 +144,7 @@
       </div>
 
       <div class="help">
-        使用步驟：1) 選擇作業　2) 輸入座號與姓名　3) 按「開始錄音」→ 需要時按「停止」→ 試聽後按「確認上傳」或「取消重錄」
+        使用步驟：1) 選作業　2) 輸入座號姓名　3) 先聽示範（若有）　4) 錄音→停止→試聽→確認上傳
       </div>
     </div>
 
@@ -151,13 +161,12 @@
 
 <script>
 (() => {
-  // GAS Web App /exec
-  const GAS_URL = "https://script.google.com/macros/s/AKfycbxI79MsZaVEOkDhaRTd2N-6R7VGWGUBinRIeRystPyXptNJpfZQc7s_sLit8_dwhi0/exec";
+  // GAS Web App /exec（換成你自己的）
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbxpPEjvv6DYQBUr8Wm0XLQI0MTYN3OiyWgs0RJqvOYPAaOMMJvBEeWFeINCyluHMws/exec";
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
 
-  const MAX_SECONDS = 120; // ✅ 使用者可自行停止，但最長 2 分鐘
+  const MAX_SECONDS = 120;
 
-  // WebRTC 音訊處理（保持你目前的音量策略）
   const AUDIO_CONSTRAINTS = {
     channelCount: 1,
     echoCancellation: true,
@@ -190,8 +199,14 @@
   const reviewArea = document.querySelector('#reviewArea');
   const preview = document.querySelector('#preview');
 
+  // sample
+  const sampleArea = document.querySelector('#sampleArea');
+  const samplePlayer = document.querySelector('#samplePlayer');
+  const sampleHint = document.querySelector('#sampleHint');
+  let sampleUrl = null;
+
   // state
-  let state = 'idle'; // idle | recording | review | uploading
+  let state = 'idle'; // idle | recording | review | uploading | sampleLoading
   let elapsedTimer = null;
   let startedAt = 0;
   let elapsedSec = 0;
@@ -215,7 +230,7 @@
   // review data
   let recordedBlob = null;
   let recordedUrl = null;
-  let recordMeta = null; // 固定本次錄音的作業/座號/姓名/token（避免中途改欄位造成混亂）
+  let recordMeta = null;
 
   function setMicState(state, msg){
     micDot.classList.remove('ok','no','wait');
@@ -268,11 +283,79 @@
     btnCancel.disabled = !(state === 'review');
     reviewArea.style.display = (state === 'review') ? 'block' : 'none';
 
-    // 錄音/上傳中避免改欄位造成混亂
     lockInputs(state === 'recording' || state === 'uploading');
 
     if(state === 'idle'){
       if(preview) preview.pause();
+    }
+  }
+
+  function cleanupSample(){
+    if(samplePlayer){ try{ samplePlayer.pause(); }catch(e){} }
+    if(sampleUrl){ try{ URL.revokeObjectURL(sampleUrl); }catch(e){} sampleUrl = null; }
+    if(samplePlayer){ samplePlayer.removeAttribute('src'); samplePlayer.load && samplePlayer.load(); }
+    sampleArea.style.display = 'none';
+    sampleHint.textContent = '';
+  }
+
+  // ===== JSONP helper =====
+  function jsonp(url, cbName){
+    return new Promise((resolve, reject)=>{
+      const cb = cbName || ('__cb_' + Math.random().toString(16).slice(2));
+      const s = document.createElement('script');
+      const cleanup = ()=>{
+        try{ delete window[cb]; }catch(e){}
+        s.remove();
+      };
+      window[cb] = (data)=>{ cleanup(); resolve(data); };
+      s.onerror = ()=>{ cleanup(); reject(new Error('JSONP_LOAD_FAIL')); };
+      s.src = url.replace('callback=__CB__', 'callback=' + cb);
+      document.body.appendChild(s);
+      // timeout
+      setTimeout(()=>{ if(window[cb]){ cleanup(); reject(new Error('JSONP_TIMEOUT')); } }, 15000);
+    });
+  }
+
+  async function loadSampleForTask(task){
+    cleanupSample();
+    if(!task || !task.hasSample) return;
+
+    sampleArea.style.display = 'block';
+    sampleHint.textContent = '載入示範音檔中…';
+
+    try{
+      // 1) meta
+      const metaUrl = `${GAS_URL}?api=getSampleMeta&taskId=${encodeURIComponent(task.id)}&callback=__CB__&_=${Date.now()}`;
+      const meta = await jsonp(metaUrl);
+      if(!meta || !meta.ok) throw new Error('META:' + (meta && meta.error ? meta.error : ''));
+      const chunks = meta.chunks || 0;
+
+      // 2) chunks
+      const parts = [];
+      let total = 0;
+
+      for(let i=0;i<chunks;i++){
+        const chunkUrl = `${GAS_URL}?api=getSampleChunk&taskId=${encodeURIComponent(task.id)}&i=${i}&callback=__CB__&_=${Date.now()}`;
+        const j = await jsonp(chunkUrl);
+        if(!j || !j.ok) throw new Error('CHUNK:' + (j && j.error ? j.error : ''));
+        const bin = atob(j.b64);
+        const u8 = new Uint8Array(bin.length);
+        for(let k=0;k<bin.length;k++) u8[k] = bin.charCodeAt(k);
+        parts.push(u8);
+        total += u8.length;
+      }
+
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for(const p of parts){ merged.set(p, off); off += p.length; }
+
+      const blob = new Blob([merged], { type: meta.mimeType || 'audio/mpeg' });
+      sampleUrl = URL.createObjectURL(blob);
+      samplePlayer.src = sampleUrl;
+      sampleHint.textContent = '✅ 已載入示範音檔，可直接播放。';
+
+    }catch(err){
+      sampleHint.textContent = '載入失敗：' + (err && err.message ? err.message : err);
     }
   }
 
@@ -285,6 +368,7 @@
       opt.textContent = '（目前沒有開放作業）';
       elTask.appendChild(opt);
       selected = null;
+      cleanupSample();
       setTimerUI(0);
       elStatus.innerHTML = `目前沒有開放作業<span class="sub">請稍後再試或聯繫老師。</span>`;
       updateUi();
@@ -300,16 +384,18 @@
       opt.textContent = `${x.title}${dl}${expired ? '（已截止）' : ''}`;
       if(expired) opt.disabled = true;
       elTask.appendChild(opt);
-      // ✅ 自動選第一個未截止作業
       if(!selected && !expired) selected = x;
     }
 
     if(selected){
       elTask.value = selected.id;
+      cleanupSample();
+      loadSampleForTask(selected);
       setTimerUI(0);
       const suggest = Number(selected.duration || 0);
       elStatus.innerHTML = `請先選擇作業並填座號姓名<span class="sub">最長 2 分鐘；${suggest ? `建議：${suggest} 秒（可自行停止）` : `可自行按停止`}。</span>`;
     } else {
+      cleanupSample();
       setTimerUI(0);
       elStatus.innerHTML = `目前作業皆已截止<span class="sub">請聯繫老師。</span>`;
     }
@@ -320,11 +406,9 @@
   elTask.addEventListener('change', ()=>{
     const id = elTask.value;
     selected = tasks.find(t=>t.id===id) || null;
+    cleanupSample();
+    if(selected) loadSampleForTask(selected);
     setTimerUI(0);
-    if(selected){
-      const suggest = Number(selected.duration || 0);
-      elStatus.innerHTML = `已選擇：${selected.title}<span class="sub">最長 2 分鐘；${suggest ? `建議：${suggest} 秒（可自行停止）` : `可自行按停止`}。</span>`;
-    }
     updateUi();
   });
 
@@ -773,14 +857,12 @@
   btnMicTest.addEventListener('click', requestMicOnce);
   btnHelp.addEventListener('click', showHelp);
 
-  // JSONP callback
   window.__onCfg = (cfg) => {
     elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
     tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
     renderTaskOptions();
   };
 
-  // init mic state
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     setMicState('no','麥克風狀態：此瀏覽器不支援');
     elStatus.innerHTML = `❌ 你的瀏覽器不支援錄音<span class="sub">請改用 Chrome / Edge / Safari 最新版。</span>`;
@@ -790,7 +872,6 @@
     setMicState('wait','麥克風狀態：尚未授權（可先測試）');
   }
 
-  // load jsonp
   (function loadJsonp(){
     const s = document.createElement('script');
     s.src = JSONP_SRC();
