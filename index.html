@@ -254,7 +254,7 @@
       opt.textContent = `${x.title}${dl}${expired ? '（已截止）' : ''}`;
       if(expired) opt.disabled = true;
       elTask.appendChild(opt);
-      if(!selected && !expired) selected = x;
+      if(idx === 0 && !selected && !expired) selected = x;
     });
 
     if(selected && isExpired(selected)) selected = tasks.find(x => !isExpired(x)) || null;
