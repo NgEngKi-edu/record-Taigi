@@ -67,6 +67,8 @@
     .help{margin-top:10px;font-size:16px;color:var(--muted);line-height:1.6}
     .sbtn{border:1px solid var(--line);background:#fff;color:#111827;padding:10px 12px;border-radius:14px;font-weight:800;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:8px}
     .sbtn:active{transform:translateY(1px)}
+    .btn:focus-visible,.sbtn:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid rgba(29,78,216,.28);outline-offset:2px}
+    @media (prefers-reduced-motion: reduce){.btn,.sbtn{transition:none}}
     .smallBtnRow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
 
     .review{margin-top:12px;border-top:1px dashed var(--line);padding-top:12px;display:none;}
@@ -93,17 +95,17 @@
         <div class="pill"><span>錄音格式：</span><b id="fmt">WAV (16kHz)</b></div>
       </div>
 
-      <div class="label">選擇作業</div>
+      <label class="label" for="taskSel">選擇作業</label>
       <select id="taskSel"></select>
 
       <div class="two" style="margin-top:10px;">
         <div>
-          <div class="label">座號</div>
-          <input id="seatNo" inputmode="numeric" placeholder="例：30" maxlength="2" />
+          <label class="label" for="seatNo">座號</label>
+          <input id="seatNo" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="例：30" maxlength="2" />
         </div>
         <div>
-          <div class="label">姓名</div>
-          <input id="stuName" placeholder="例：王小明" maxlength="10" />
+          <label class="label" for="stuName">姓名</label>
+          <input id="stuName" autocomplete="off" placeholder="例：王小明" maxlength="20" />
         </div>
       </div>
 
@@ -114,33 +116,33 @@
         <div class="hint" id="sampleHint">載入中…</div>
       </div>
 
-      <button class="btn" id="startBtn" style="margin-top:12px;" disabled>🎙️ 開始錄音</button>
-      <button class="btn danger" id="stopBtn" style="margin-top:10px;" disabled>⏹️ 停止錄音</button>
+      <button type="button" class="btn" id="startBtn" style="margin-top:12px;" disabled>🎙️ 開始錄音</button>
+      <button type="button" class="btn danger" id="stopBtn" style="margin-top:10px;" disabled>⏹️ 停止錄音</button>
 
       <div class="review" id="reviewArea">
         <div class="label">試聽（確認沒問題再上傳）</div>
         <audio id="preview" controls></audio>
         <div class="row" style="margin-top:10px;justify-content:flex-end;">
-          <button class="sbtn" id="cancelBtn">↩️ 取消重錄</button>
-          <button class="sbtn" id="uploadBtn">✅ 確認上傳</button>
+          <button type="button" class="sbtn" id="cancelBtn">↩️ 取消重錄</button>
+          <button type="button" class="sbtn" id="uploadBtn">✅ 確認上傳</button>
         </div>
       </div>
 
       <div class="meta">
-        <div class="status" id="status">
+        <div class="status" id="status" role="status" aria-live="polite">
           載入作業中…
           <span class="sub">最長錄音 2 分鐘；可自行按停止。</span>
         </div>
 
-        <div class="timer">
+        <div class="timer" id="timerBox" role="progressbar" aria-label="錄音時間進度" aria-valuemin="0" aria-valuemax="120" aria-valuenow="0">
           <div class="bar"><i id="bar"></i></div>
           <div class="t" id="t">00:00</div>
         </div>
       </div>
 
       <div class="smallBtnRow">
-        <button class="sbtn" id="micTest">🎤 麥克風測試</button>
-        <button class="sbtn" id="help">🧩 權限教學</button>
+        <button type="button" class="sbtn" id="micTest">🎤 麥克風測試</button>
+        <button type="button" class="sbtn" id="help">🧩 權限教學</button>
       </div>
 
       <div class="help">
@@ -166,6 +168,8 @@
   const JSONP_SRC = () => `${GAS_URL}?api=getPublicConfig&callback=__onCfg&_=${Date.now()}`;
 
   const MAX_SECONDS = 120;
+  const MAX_SAMPLE_BYTES = 15 * 1024 * 1024;
+  const UPLOAD_STATUS_TIMEOUT_MS = 20000;
 
   const AUDIO_CONSTRAINTS = {
     channelCount: 1,
@@ -192,6 +196,7 @@
   const micText = document.querySelector('#micText');
   const bar = document.querySelector('#bar');
   const t = document.querySelector('#t');
+  const timerBox = document.querySelector('#timerBox');
 
   const btnMicTest = document.querySelector('#micTest');
   const btnHelp = document.querySelector('#help');
@@ -204,9 +209,10 @@
   const samplePlayer = document.querySelector('#samplePlayer');
   const sampleHint = document.querySelector('#sampleHint');
   let sampleUrl = null;
+  let sampleLoadSeq = 0;
 
   // state
-  let state = 'idle'; // idle | recording | review | uploading | sampleLoading
+  let state = 'idle'; // idle | recording | review | uploading
   let elapsedTimer = null;
   let startedAt = 0;
   let elapsedSec = 0;
@@ -247,10 +253,16 @@
     return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   }
 
+  function escapeText(s){
+    return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
   function setTimerUI(elapsed){
     t.textContent = formatTime(elapsed);
-    const pct = Math.max(0, Math.min(100, (elapsed / MAX_SECONDS) * 100));
+    const safeElapsed = Math.max(0, Math.min(MAX_SECONDS, Number(elapsed) || 0));
+    const pct = Math.max(0, Math.min(100, (safeElapsed / MAX_SECONDS) * 100));
     bar.style.width = `${pct}%`;
+    if(timerBox) timerBox.setAttribute('aria-valuenow', String(Math.floor(safeElapsed)));
   }
 
   function validInfo(){
@@ -258,8 +270,15 @@
     const name = String(elName.value||'').trim();
     if(!/^\d{1,2}$/.test(seat)) return false;
     if(Number(seat) < 1 || Number(seat) > 99) return false;
-    if(name.length < 2) return false;
+    if(name.length < 2 || name.length > 20) return false;
+    if(/[\x00-\x1F\x7F]/.test(name)) return false;
     return true;
+  }
+
+  function formatDeadline(iso){
+    if(!iso) return '';
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    return m ? `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}` : String(iso);
   }
 
   function isExpired(task){
@@ -283,7 +302,7 @@
     btnCancel.disabled = !(state === 'review');
     reviewArea.style.display = (state === 'review') ? 'block' : 'none';
 
-    lockInputs(state === 'recording' || state === 'uploading');
+    lockInputs(state !== 'idle');
 
     if(state === 'idle'){
       if(preview) preview.pause();
@@ -291,6 +310,7 @@
   }
 
   function cleanupSample(){
+    sampleLoadSeq++;
     if(samplePlayer){ try{ samplePlayer.pause(); }catch(e){} }
     if(sampleUrl){ try{ URL.revokeObjectURL(sampleUrl); }catch(e){} sampleUrl = null; }
     if(samplePlayer){ samplePlayer.removeAttribute('src'); samplePlayer.load && samplePlayer.load(); }
@@ -303,48 +323,64 @@
     return new Promise((resolve, reject)=>{
       const cb = cbName || ('__cb_' + Math.random().toString(16).slice(2));
       const s = document.createElement('script');
+      let done = false;
+      let timerId = null;
+
       const cleanup = ()=>{
-        try{ delete window[cb]; }catch(e){}
+        if(done) return;
+        done = true;
+        if(timerId) clearTimeout(timerId);
+        try{ delete window[cb]; }catch(e){ window[cb] = undefined; }
         s.remove();
       };
+
       window[cb] = (data)=>{ cleanup(); resolve(data); };
       s.onerror = ()=>{ cleanup(); reject(new Error('JSONP_LOAD_FAIL')); };
-      s.src = url.replace('callback=__CB__', 'callback=' + cb);
+      s.src = url.replace('callback=__CB__', 'callback=' + encodeURIComponent(cb));
       document.body.appendChild(s);
-      // timeout
-      setTimeout(()=>{ if(window[cb]){ cleanup(); reject(new Error('JSONP_TIMEOUT')); } }, 15000);
+      timerId = setTimeout(()=>{ cleanup(); reject(new Error('JSONP_TIMEOUT')); }, 15000);
     });
   }
 
   async function loadSampleForTask(task){
     cleanupSample();
+    const seq = sampleLoadSeq;
     if(!task || !task.hasSample) return;
 
     sampleArea.style.display = 'block';
     sampleHint.textContent = '載入示範音檔中…';
 
     try{
-      // 1) meta
       const metaUrl = `${GAS_URL}?api=getSampleMeta&taskId=${encodeURIComponent(task.id)}&callback=__CB__&_=${Date.now()}`;
       const meta = await jsonp(metaUrl);
-      if(!meta || !meta.ok) throw new Error('META:' + (meta && meta.error ? meta.error : ''));
-      const chunks = meta.chunks || 0;
+      if(seq !== sampleLoadSeq) return;
+      if(!meta || !meta.ok) throw new Error('META:' + (meta && meta.message ? meta.message : ''));
 
-      // 2) chunks
+      const chunks = Number(meta.chunks || 0);
+      const totalBytes = Number(meta.totalBytes || 0);
+      if(!chunks || !totalBytes) throw new Error('META_INCOMPLETE');
+      if(totalBytes > MAX_SAMPLE_BYTES) throw new Error('SAMPLE_TOO_LARGE');
+
       const parts = [];
       let total = 0;
 
       for(let i=0;i<chunks;i++){
+        if(seq !== sampleLoadSeq) return;
+        sampleHint.textContent = `載入示範音檔中…（${i+1}/${chunks}）`;
         const chunkUrl = `${GAS_URL}?api=getSampleChunk&taskId=${encodeURIComponent(task.id)}&i=${i}&callback=__CB__&_=${Date.now()}`;
         const j = await jsonp(chunkUrl);
-        if(!j || !j.ok) throw new Error('CHUNK:' + (j && j.error ? j.error : ''));
-        const bin = atob(j.b64);
+        if(seq !== sampleLoadSeq) return;
+        if(!j || !j.ok) throw new Error('CHUNK:' + (j && j.message ? j.message : ''));
+
+        const bin = atob(String(j.b64 || '').replace(/[^A-Za-z0-9+/=]/g, ''));
         const u8 = new Uint8Array(bin.length);
-        for(let k=0;k<bin.length;k++) u8[k] = bin.charCodeAt(k);
+        for(let k=0;k<bin.length;k++) u8[k] = bin.charCodeAt(k) & 0xff;
         parts.push(u8);
         total += u8.length;
+        if(total > MAX_SAMPLE_BYTES) throw new Error('SAMPLE_TOO_LARGE');
       }
 
+      if(seq !== sampleLoadSeq) return;
       const merged = new Uint8Array(total);
       let off = 0;
       for(const p of parts){ merged.set(p, off); off += p.length; }
@@ -355,7 +391,11 @@
       sampleHint.textContent = '✅ 已載入示範音檔，可直接播放。';
 
     }catch(err){
-      sampleHint.textContent = '載入失敗：' + (err && err.message ? err.message : err);
+      if(seq !== sampleLoadSeq) return;
+      const code = err && err.message ? err.message : String(err);
+      sampleHint.textContent = code === 'SAMPLE_TOO_LARGE'
+        ? '示範音檔過大，請聯繫老師調整檔案。'
+        : '載入失敗：' + code;
     }
   }
 
@@ -380,7 +420,7 @@
       const opt = document.createElement('option');
       opt.value = x.id;
       const expired = isExpired(x);
-      const dl = x.deadline ? `｜截止：${x.deadline}` : '';
+      const dl = x.deadline ? `｜截止：${formatDeadline(x.deadline)}` : '';
       opt.textContent = `${x.title}${dl}${expired ? '（已截止）' : ''}`;
       if(expired) opt.disabled = true;
       elTask.appendChild(opt);
@@ -425,7 +465,7 @@
 3) 重新整理本頁
 
 【iPhone / iPad】
-設定 → Safari（或 Chrome）→ 麥克風 → 允許
+第一次使用時請允許麥克風。若曾拒絕，請到瀏覽器的網站設定或 iOS 隱私權設定重新允許麥克風。
 
 【LINE 內建瀏覽器】
 可能無法錄音，請「在瀏覽器開啟」。`
@@ -462,9 +502,9 @@
     if (document.visibilityState === 'visible') await requestWakeLock();
   });
 
-  function ensureAudioCtx(){
+  async function ensureAudioCtx(){
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
   }
 
   function stopAllAudio(){
@@ -511,19 +551,22 @@
     for(let i=0;i<samples.length;i++) samples[i] -= mean;
 
     let peak = 0;
-    for(let i=0;i<samples.length;i++){ const a = Math.abs(samples[i]); if(a>peak) peak=a; }
-    if(!peak || peak < 1e-6) return samples;
+    for(let i=0;i<samples.length;i++){
+      const a = Math.abs(samples[i]);
+      if(a > peak) peak = a;
+    }
 
-    const TARGET = 0.98;
-    const MAX_GAIN = 80;
-    let gain = TARGET / peak;
-    if (gain < 1) gain = 1;
-    if (gain > MAX_GAIN) gain = MAX_GAIN;
+    // 近乎靜音時不放大，避免把底噪放大成很大的聲音。
+    if(!peak || peak < 0.01) return samples;
+
+    const TARGET = 0.92;
+    const MAX_GAIN = 4;
+    const gain = Math.min(MAX_GAIN, TARGET / peak);
 
     for(let i=0;i<samples.length;i++){
       let v = samples[i] * gain;
-      if (v > 0.995) v = 0.995;
-      if (v < -0.995) v = -0.995;
+      if(v > 0.98) v = 0.98;
+      if(v < -0.98) v = -0.98;
       samples[i] = v;
     }
     return samples;
@@ -585,8 +628,15 @@
   }
 
   function makeToken(){
-    try{ if (crypto && crypto.randomUUID) return crypto.randomUUID(); }catch(e){}
-    return 't' + Date.now() + '_' + Math.random().toString(16).slice(2);
+    try{
+      if (crypto && crypto.randomUUID) return crypto.randomUUID();
+      if (crypto && crypto.getRandomValues){
+        const a = new Uint8Array(16);
+        crypto.getRandomValues(a);
+        return 't_' + Array.from(a, b => b.toString(16).padStart(2,'0')).join('');
+      }
+    }catch(e){}
+    return 't_' + Date.now() + '_' + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
   }
 
   async function initWorklet(){
@@ -658,16 +708,32 @@
     if(state !== 'idle') return;
     if(!selected){ elStatus.innerHTML = `❌ 請先選擇作業`; return; }
     if(isExpired(selected)){ elStatus.innerHTML = `❌ 作業已截止`; return; }
-    if(!validInfo()){ elStatus.innerHTML = `❌ 請正確填寫座號與姓名<span class="sub">座號 1～99、姓名至少 2 個字。</span>`; return; }
+    if(!validInfo()){ elStatus.innerHTML = `❌ 請正確填寫座號與姓名<span class="sub">座號 1～99、姓名 2～20 個字。</span>`; return; }
+
+    // iOS / Safari：AudioContext 的建立與 resume() 要在「使用者點擊」這個同步事件內啟動。
+    // 因此在任何 await 之前先呼叫 ensureAudioCtx()；同時也立即發起 getUserMedia。
+    let audioPrimeError = null;
+    let audioReadyPromise;
+    let mediaPromise;
 
     try{
+      audioReadyPromise = ensureAudioCtx().catch(err => { audioPrimeError = err; });
+      mediaPromise = navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
+    }catch(err){
+      setMicState('no','麥克風狀態：無法啟動');
+      elStatus.innerHTML = `❌ 無法啟動錄音<span class="sub">${escapeText(String(err && err.message ? err.message : err))}</span>`;
+      return;
+    }
+
+    try{
+      if(samplePlayer){ try{ samplePlayer.pause(); }catch(e){} }
       cleanupReview();
 
       state = 'recording';
       updateUi();
 
       wantWakeLock = true;
-      await requestWakeLock();
+      const wakePromise = requestWakeLock();
 
       setMicState('wait','麥克風狀態：錄音準備中…');
       elStatus.innerHTML = `🎙️ 錄音準備中…<span class="sub">開始錄音後，按「停止錄音」結束；最長 2 分鐘。</span>`;
@@ -680,9 +746,17 @@
         studentName: String(elName.value||'').trim()
       };
 
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
+      mediaStream = await mediaPromise;
+      await audioReadyPromise;
+      if(audioPrimeError) throw audioPrimeError;
 
-      ensureAudioCtx();
+      // 個別 Safari 版本可能在權限視窗關閉後又把 context suspend，
+      // 此時再補一次 resume；第一次 resume 已經在 user gesture 中發起。
+      if(!audioCtx || audioCtx.state === 'closed') throw new Error('AudioContext unavailable');
+      if(audioCtx.state === 'suspended') await audioCtx.resume();
+
+      try{ await wakePromise; }catch(e){}
+
       pcmChunks = []; pcmLength = 0;
 
       srcNode = audioCtx.createMediaStreamSource(mediaStream);
@@ -730,7 +804,7 @@
       stopAllAudio();
       clearElapsedTimer();
       setMicState('no','麥克風狀態：未開啟（請允許權限）');
-      elStatus.innerHTML = `❌ 無法開始錄音<span class="sub">${String(err && err.name ? err.name : err)}</span>`;
+      elStatus.innerHTML = `❌ 無法開始錄音<span class="sub">${escapeText(String(err && err.name ? err.name : (err && err.message ? err.message : err)))}</span>`;
     }
   }
 
@@ -741,6 +815,8 @@
     updateUi();
 
     clearElapsedTimer();
+    wantWakeLock = false;
+    releaseWakeLock();
     elapsedSec = Math.min(MAX_SECONDS, elapsedSec);
     setTimerUI(elapsedSec);
 
@@ -800,17 +876,45 @@
     setTimerUI(0);
   }
 
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function getUploadStatusOnce(token){
+    const url = `${GAS_URL}?api=getUploadStatus&token=${encodeURIComponent(token)}&callback=__CB__&_=${Date.now()}`;
+    return jsonp(url);
+  }
+
+  async function waitForUploadStatus(token, timeoutMs){
+    const started = Date.now();
+    let last = null;
+
+    while(Date.now() - started < timeoutMs){
+      try{
+        last = await getUploadStatusOnce(token);
+        if(last && (last.status === 'success' || last.status === 'error' || last.status === 'invalid')) return last;
+      }catch(err){
+        last = { ok:false, status:'check_failed', message:String(err && err.message ? err.message : err) };
+      }
+      await sleep(700);
+    }
+
+    return last && last.status !== 'pending'
+      ? last
+      : { ok:true, status:'timeout', message:'送出後尚未取得伺服器確認' };
+  }
+
   async function uploadRecording(){
     if(state !== 'review' || !recordedBlob || !recordMeta) return;
     state = 'uploading';
     updateUi();
 
+    wantWakeLock = true;
+    await requestWakeLock();
+
     try{
       setMicState('wait','麥克風狀態：送出中…');
-      elStatus.innerHTML = `⏫ 送出中…<span class="sub">請稍候，將顯示回執頁。</span>`;
+      elStatus.innerHTML = `⏫ 送出中…<span class="sub">正在等待伺服器確認，請勿關閉頁面。</span>`;
 
       const b64 = await blobToBase64(recordedBlob);
-
       const payload = {
         token: recordMeta.token,
         taskId: recordMeta.taskId,
@@ -820,21 +924,45 @@
         base64: b64
       };
 
+      // GAS Web App 對 GitHub Pages 的跨網域 POST 使用 no-cors；
+      // 因為 opaque response 無法判斷 HTTP/後端結果，所以 POST 後一定再用 JSONP 查 token 狀態。
       await fetch(`${GAS_URL}?api=uploadV2`, {
         method: 'POST',
         mode: 'no-cors',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
         body: JSON.stringify(payload)
       });
 
+      elStatus.innerHTML = `🔎 已送出，正在確認伺服器是否收件…<span class="sub">請勿重複送出。</span>`;
+      const result = await waitForUploadStatus(recordMeta.token, UPLOAD_STATUS_TIMEOUT_MS);
+
+      if(result && result.status === 'success'){
+        wantWakeLock = false;
+        releaseWakeLock();
+        location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(recordMeta.token)}`;
+        return;
+      }
+
+      state = 'review';
       wantWakeLock = false;
       releaseWakeLock();
 
-      location.href = `${GAS_URL}?page=receipt&token=${encodeURIComponent(recordMeta.token)}`;
+      if(result && result.status === 'error'){
+        setMicState('no','麥克風狀態：送出未成功');
+        elStatus.innerHTML = `❌ 上傳未成功<span class="sub">${escapeText(result.message || '後端拒絕本次上傳')}。請按「取消重錄」後重新處理。</span>`;
+      }else{
+        setMicState('wait','麥克風狀態：尚未確認收件');
+        elStatus.innerHTML = `⚠️ 已送出，但尚未取得伺服器確認<span class="sub">請先確認網路，再按一次「確認上傳」；系統會沿用同一 token，若後端其實已收件，不會再次處理同一筆。</span>`;
+      }
+      updateUi();
 
     } catch(err) {
       state = 'review';
+      wantWakeLock = false;
+      releaseWakeLock();
       setMicState('no','麥克風狀態：送出失敗');
-      elStatus.innerHTML = `❌ 上傳失敗<span class="sub">${String(err && err.message ? err.message : err)}</span>`;
+      elStatus.innerHTML = `❌ 上傳失敗<span class="sub">${escapeText(String(err && err.message ? err.message : err))}</span>`;
       updateUi();
     }
   }
@@ -842,6 +970,8 @@
   function cancelRecording(){
     if(state !== 'review') return;
     cleanupReview();
+    wantWakeLock = false;
+    releaseWakeLock();
     state = 'idle';
     setMicState('wait','麥克風狀態：尚未錄音');
     elStatus.innerHTML = `已取消本次錄音<span class="sub">可重新按「開始錄音」。最長 2 分鐘。</span>`;
@@ -857,7 +987,9 @@
   btnMicTest.addEventListener('click', requestMicOnce);
   btnHelp.addEventListener('click', showHelp);
 
+  let cfgLoaded = false;
   window.__onCfg = (cfg) => {
+    cfgLoaded = true;
     elTitle.textContent = (cfg && cfg.title) ? cfg.title : '錄音作業';
     tasks = (cfg && cfg.tasks) ? cfg.tasks : [];
     renderTaskOptions();
@@ -872,6 +1004,21 @@
     setMicState('wait','麥克風狀態：尚未授權（可先測試）');
   }
 
+  window.addEventListener('beforeunload', (ev) => {
+    if(state === 'recording' || state === 'uploading'){
+      ev.preventDefault();
+      ev.returnValue = '';
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    clearElapsedTimer();
+    wantWakeLock = false;
+    releaseWakeLock();
+    stopAllAudio();
+    cleanupSample();
+  });
+
   (function loadJsonp(){
     const s = document.createElement('script');
     s.src = JSONP_SRC();
@@ -879,6 +1026,11 @@
       elStatus.innerHTML = `❌ 載入作業失敗<span class="sub">請確認 GAS_URL 正確、且部署為任何人可存取。</span>`;
     };
     document.body.appendChild(s);
+    setTimeout(() => {
+      if(!cfgLoaded){
+        elStatus.innerHTML = `❌ 載入作業逾時<span class="sub">請檢查網路後重新整理本頁。</span>`;
+      }
+    }, 15000);
   })();
 })();
 </script>
